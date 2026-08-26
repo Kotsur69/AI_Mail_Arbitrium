@@ -1,0 +1,210 @@
+"""The shape every mail source must produce, whatever it reads from.
+
+Outlook MAPI is the chosen route, but the golden set and every test run off
+exported files, so both must yield the same record. Anything a source cannot
+answer is None -- never a guess, never an empty string standing in for absent.
+"""
+
+from datetime import datetime, timezone
+
+import pytest
+
+from mail_analyzer.ingestion.base import RawMessage, dedupe_key, sender_domain
+from mail_analyzer.ingestion.outlook_mapi import PR_INTERNET_MESSAGE_ID, PR_SMTP_ADDRESS
+
+
+def msg(**over: object) -> RawMessage:
+    base = {
+        "message_id": "<abc123@dostawca.pl>",
+        "received_at": datetime(2026, 8, 4, 10, 30, tzinfo=timezone.utc),
+        "sender_address": "jan.kowalski@dostawca.pl",
+        "subject": "Re: Prosba o zgode",
+        "body": "Potwierdzamy.",
+        "folder": "Skrzynka odbiorcza",
+        "attachment_names": (),
+    }
+    return RawMessage(**{**base, **over})
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("jan.kowalski@dostawca.pl", "dostawca.pl"),
+        ("JAN.KOWALSKI@Dostawca.PL", "dostawca.pl"),
+        ("  jan@dostawca.pl  ", "dostawca.pl"),
+        ("", None),
+        ("not-an-address", None),
+        # Exchange hands back an X.500 DN for internal senders, not an SMTP address.
+        ("/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=abc", None),
+    ],
+)
+def test_sender_domain_extraction(address: str, expected: str | None) -> None:
+    assert sender_domain(address) == expected
+
+
+def test_message_id_is_the_dedupe_key_when_present() -> None:
+    assert dedupe_key(msg()) == "<abc123@dostawca.pl>"
+
+
+def test_dedupe_key_falls_back_when_the_message_id_is_missing() -> None:
+    # Some items (drafts, non-SMTP) carry no Message-ID; they still need a key.
+    a = dedupe_key(msg(message_id=None))
+    b = dedupe_key(msg(message_id=None))
+
+    assert a == b
+    assert a != dedupe_key(msg(message_id=None, subject="inny temat"))
+
+
+def test_dedupe_key_is_stable_across_folders() -> None:
+    # Outlook rewrites EntryID on a folder move, so the key must ignore folder.
+    assert dedupe_key(msg()) == dedupe_key(msg(folder="Archiwum"))
+
+
+def test_has_attachments_follows_the_names() -> None:
+    assert msg().has_attachments is False
+    assert msg(attachment_names=("aneks.pdf",)).has_attachments is True
+
+
+def test_domain_is_derived_not_stored_separately() -> None:
+    assert msg().sender_domain == "dostawca.pl"
+    assert msg(sender_address="").sender_domain is None
+
+
+def test_raw_message_is_immutable() -> None:
+    # Verdicts are attached downstream; the ingested record itself never mutates.
+    with pytest.raises(Exception):
+        msg().subject = "zmienione"  # type: ignore[misc]
+
+
+class FakeComItem:
+    """Stands in for an Outlook MailItem, including its failure modes."""
+
+    Class = 43
+
+    def __init__(self, **attrs: object) -> None:
+        self.__dict__.update(attrs)
+
+    def __getattr__(self, name: str) -> object:  # unset properties raise, as COM does
+        raise AttributeError(name)
+
+
+class FakePropertyAccessor:
+    """Tag-aware, because message-id and SMTP address share this one interface.
+
+    A fake that ignored the tag would hand the Message-ID back as the sender.
+    """
+
+    def __init__(self, message_id: object = "", smtp: object = "") -> None:
+        self._by_tag = {PR_INTERNET_MESSAGE_ID: message_id, PR_SMTP_ADDRESS: smtp}
+
+    def GetProperty(self, tag: str) -> object:
+        value = self._by_tag.get(tag, "")
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def test_mapi_item_maps_onto_the_shared_record() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import to_raw_message
+
+    item = FakeComItem(
+        PropertyAccessor=FakePropertyAccessor(message_id="<abc@dostawca.pl>", smtp="jan@dostawca.pl"),
+        ReceivedTime=datetime(2026, 8, 4, 10, 30),
+        SenderEmailAddress="jan@dostawca.pl",
+        Subject="Re: zgoda",
+        Body="Potwierdzamy.",
+        Attachments=None,
+    )
+
+    out = to_raw_message(item, "Skrzynka odbiorcza")
+
+    assert out.message_id == "<abc@dostawca.pl>"
+    assert out.sender_domain == "dostawca.pl"
+    assert out.folder == "Skrzynka odbiorcza"
+
+
+def test_one_unreadable_property_does_not_lose_the_message() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import to_raw_message
+
+    # Body blocked by the object model guard; everything else still readable.
+    item = FakeComItem(
+        PropertyAccessor=FakePropertyAccessor(message_id=RuntimeError("blocked")),
+        ReceivedTime=datetime(2026, 8, 4, 10, 30),
+        SenderEmailAddress="jan@dostawca.pl",
+        Subject="Re: zgoda",
+    )
+
+    out = to_raw_message(item, "Skrzynka odbiorcza")
+
+    assert out.message_id is None
+    assert out.body == ""
+    assert out.subject == "Re: zgoda"
+
+
+def test_restrict_clause_uses_us_dates_whatever_the_system_locale() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import restrict_clause
+
+    clause = restrict_clause(datetime(2026, 8, 4, 0, 0))
+
+    assert clause == "[ReceivedTime] >= '08/04/2026 12:00 AM'"
+
+
+def test_outlook_source_satisfies_the_mail_source_protocol() -> None:
+    from mail_analyzer.ingestion.base import MailSource
+    from mail_analyzer.ingestion.outlook_mapi import OutlookMapiSource
+
+    assert isinstance(OutlookMapiSource("skrzynka@firma.pl"), MailSource)
+
+
+class FakeExchangeUser:
+    PrimarySmtpAddress = "jan.kowalski@firma.pl"
+
+
+class FakeSender:
+    def GetExchangeUser(self) -> FakeExchangeUser:
+        return FakeExchangeUser()
+
+
+def test_exchange_dn_sender_is_resolved_to_a_real_smtp_address() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import sender_address
+
+    item = FakeComItem(
+        PropertyAccessor=FakePropertyAccessor(smtp="jan.kowalski@firma.pl"),
+        SenderEmailAddress="/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=abc",
+    )
+
+    assert sender_address(item) == "jan.kowalski@firma.pl"
+
+
+def test_sender_falls_back_to_the_exchange_user_when_the_proptag_is_blocked() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import sender_address
+
+    item = FakeComItem(
+        PropertyAccessor=FakePropertyAccessor(smtp=RuntimeError("blocked")),
+        Sender=FakeSender(),
+        SenderEmailAddress="/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=abc",
+    )
+
+    assert sender_address(item) == "jan.kowalski@firma.pl"
+
+
+def test_sender_keeps_the_plain_smtp_address_when_there_is_one() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import sender_address
+
+    item = FakeComItem(
+        PropertyAccessor=FakePropertyAccessor(),
+        SenderEmailAddress="jan@dostawca.pl",
+    )
+
+    assert sender_address(item) == "jan@dostawca.pl"
+
+
+def test_sender_returns_the_dn_rather_than_inventing_when_nothing_resolves() -> None:
+    from mail_analyzer.ingestion.base import sender_domain
+    from mail_analyzer.ingestion.outlook_mapi import sender_address
+
+    dn = "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=abc"
+    item = FakeComItem(PropertyAccessor=FakePropertyAccessor(smtp=RuntimeError("no")), SenderEmailAddress=dn)
+
+    assert sender_address(item) == dn
+    assert sender_domain(sender_address(item)) is None

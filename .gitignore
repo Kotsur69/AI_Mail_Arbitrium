@@ -1,0 +1,25 @@
+# Environments
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.impeccable/
+.claude/
+
+# Secrets and configuration
+.env
+.env.*
+!.env.example
+
+# Local data: mail, exports, model weights. None of this belongs in a repo.
+data/
+*.db
+*.sqlite3
+*.csv
+*.gguf
+
+# The internal project brief -- contains stakeholder names and mailbox details.
+mail_analyzer.md
