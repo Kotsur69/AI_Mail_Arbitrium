@@ -208,3 +208,141 @@ def test_sender_returns_the_dn_rather_than_inventing_when_nothing_resolves() -> 
 
     assert sender_address(item) == dn
     assert sender_domain(sender_address(item)) is None
+
+
+# --- store and folder resolution -------------------------------------------
+# A mailbox is configured by whatever a person can see in Outlook, so both
+# lookups have to survive display languages, punctuation and near-misses.
+
+
+class FakeFolder:
+    def __init__(self, name: str, *children: "FakeFolder") -> None:
+        self.Name = name
+        self.Folders = list(children)
+
+
+class FakeStore:
+    def __init__(self, display_name: str, root: FakeFolder, inbox: FakeFolder | None = None) -> None:
+        self.DisplayName = display_name
+        self._root = root
+        self._inbox = inbox
+
+    def GetRootFolder(self) -> FakeFolder:
+        return self._root
+
+    def GetDefaultFolder(self, _kind: int) -> FakeFolder:
+        if self._inbox is None:
+            raise RuntimeError("this store has no default inbox")
+        return self._inbox
+
+
+class FakeNamespace:
+    def __init__(self, *stores: FakeStore) -> None:
+        self.Stores = list(stores)
+
+
+def store(display_name: str, *folder_names: str, inbox: str | None = None) -> FakeStore:
+    folders = [FakeFolder(n) for n in folder_names]
+    root = FakeFolder(display_name, *folders)
+    match = next((f for f in folders if f.Name == inbox), None)
+    return FakeStore(display_name, root, match)
+
+
+def test_store_is_found_by_its_exact_display_name() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_store
+
+    ns = FakeNamespace(store("zgody@firma.pl"), store("you@firma.pl"))
+
+    assert find_store(ns, "you@firma.pl").DisplayName == "you@firma.pl"
+
+
+def test_store_matching_ignores_case_and_padding() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_store
+
+    ns = FakeNamespace(store("Zgody@Firma.pl"))
+
+    assert find_store(ns, "  zgody@firma.pl ").DisplayName == "Zgody@Firma.pl"
+
+
+def test_store_can_be_named_by_a_fragment() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_store
+
+    ns = FakeNamespace(store("Zgody - Dostawcy (zgody@firma.pl)"))
+
+    assert find_store(ns, "zgody@firma.pl").DisplayName.startswith("Zgody")
+
+
+def test_an_exact_match_beats_a_loose_one() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_store
+
+    ns = FakeNamespace(store("Archiwum zgody@firma.pl"), store("zgody@firma.pl"))
+
+    assert find_store(ns, "zgody@firma.pl").DisplayName == "zgody@firma.pl"
+
+
+def test_an_unknown_store_error_lists_what_is_available() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_store
+
+    ns = FakeNamespace(store("zgody@firma.pl"))
+
+    with pytest.raises(LookupError, match="zgody@firma.pl"):
+        find_store(ns, "nie-ma@firma.pl")
+
+
+def test_no_folder_means_the_store_default_inbox() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    target = store("zgody@firma.pl", "Skrzynka odbiorcza", "Wyslane", inbox="Skrzynka odbiorcza")
+
+    assert find_folder(target, None).Name == "Skrzynka odbiorcza"
+
+
+def test_inbox_is_recognised_by_name_when_the_store_offers_no_default() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    # Shared and delegated stores routinely refuse GetDefaultFolder.
+    target = store("zgody@firma.pl", "Wyslane", "Skrzynka odbiorcza")
+
+    assert find_folder(target, "").Name == "Skrzynka odbiorcza"
+
+
+def test_a_store_with_no_inbox_at_all_says_so() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    with pytest.raises(LookupError, match="no inbox"):
+        find_folder(store("Archiwum", "2025", "2026"), None)
+
+
+def test_a_nested_folder_path_is_walked() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    inbox = FakeFolder("Skrzynka odbiorcza", FakeFolder("Dostawcy"))
+    target = FakeStore("zgody@firma.pl", FakeFolder("root", inbox))
+
+    assert find_folder(target, "Skrzynka odbiorcza/Dostawcy").Name == "Dostawcy"
+
+
+def test_either_path_separator_works() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    inbox = FakeFolder("Inbox", FakeFolder("Suppliers"))
+    target = FakeStore("zgody@firma.pl", FakeFolder("root", inbox))
+
+    assert find_folder(target, "Inbox\Suppliers").Name == "Suppliers"
+
+
+def test_folder_names_match_case_insensitively() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    target = FakeStore("zgody@firma.pl", FakeFolder("root", FakeFolder("Dostawcy")))
+
+    assert find_folder(target, "dostawcy").Name == "Dostawcy"
+
+
+def test_an_unknown_folder_error_lists_what_is_available() -> None:
+    from mail_analyzer.ingestion.outlook_mapi import find_folder
+
+    target = FakeStore("zgody@firma.pl", FakeFolder("root", FakeFolder("Dostawcy")))
+
+    with pytest.raises(LookupError, match="Dostawcy"):
+        find_folder(target, "Zgody")

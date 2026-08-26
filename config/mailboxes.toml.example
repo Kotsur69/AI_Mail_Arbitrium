@@ -1,0 +1,30 @@
+# Every mailbox the analyzer knows about. Copy this file to config/mailboxes.toml
+# (which is gitignored) and edit it, or let Outlook fill it in for you:
+#
+#   .venv/Scripts/python.exe scripts/analyze_mailbox.py --init-config
+#
+# Then run one mailbox by name, or all of the enabled ones:
+#
+#   ... scripts/analyze_mailbox.py --mailbox dostawcy
+#   ... scripts/analyze_mailbox.py --all
+
+[llm]
+base_url = "http://localhost:1234/v1"
+model = "qwen/qwen3-30b-a3b-2507"
+
+# Inherited by every [[mailbox]] below unless it says otherwise.
+[defaults]
+limit = 0          # 0 = no limit
+enabled = true
+
+[[mailbox]]
+name = "dostawcy"                # how you refer to it on the command line
+store = "zgody@firma.pl"         # mailbox name or address; matched loosely
+folder = "Skrzynka odbiorcza"    # omit entirely to use the store's inbox
+since = 2026-07-25               # ignore anything received before this day
+
+[[mailbox]]
+name = "moja"
+store = "you@firma.pl"
+# no folder: whatever Outlook calls this store's inbox
+enabled = false

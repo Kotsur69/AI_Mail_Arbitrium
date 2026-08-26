@@ -30,6 +30,12 @@ PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
 RESTRICT_DATE_FORMAT = "%m/%d/%Y %I:%M %p"
 
 OL_MAIL_ITEM = 43
+OL_FOLDER_INBOX = 6
+
+# Outlook names its folders in the display language, so a config file cannot
+# hard-code one. These are the fallbacks used when the store refuses to hand
+# over its default inbox.
+INBOX_ALIASES = ("skrzynka odbiorcza", "inbox", "posteingang", "boite de reception")
 
 
 def restrict_clause(since: datetime) -> str:
@@ -118,23 +124,105 @@ def to_raw_message(item: Any, folder_name: str) -> RawMessage:
     )
 
 
-class OutlookMapiSource:
-    """A MailSource backed by a classic Outlook profile."""
+def find_store(namespace: Any, wanted: str) -> Any:
+    """The store whose display name best matches `wanted`.
 
-    def __init__(self, store_name: str, folder_name: str = "Skrzynka odbiorcza") -> None:
+    Matching is deliberately loose. A store shows up in Outlook as an address
+    ("zgody@firma.pl"), as a display name ("Zgody - Dostawcy"), or as either one
+    with a suffix, and which of those a person types should not decide whether
+    the run works. Exact wins over prefix, prefix over substring, so a loose
+    match can never shadow a store someone named exactly.
+    """
+    needle = wanted.strip().lower()
+    names: list[str] = []
+    exact = prefix = contains = None
+
+    for store in namespace.Stores:
+        name = (_get(store, "DisplayName", "") or "").strip()
+        names.append(name)
+        low = name.lower()
+        if low == needle:
+            exact = exact or store
+        elif low.startswith(needle) or needle.startswith(low):
+            prefix = prefix or store
+        elif needle in low:
+            contains = contains or store
+
+    match = exact or prefix or contains
+    if match is not None:
+        return match
+    raise LookupError(
+        f"store {wanted!r} not in this Outlook profile. Available: {', '.join(names) or '(none)'}"
+    )
+
+
+def _child(folder: Any, wanted: str) -> Any:
+    """One subfolder by name, case-insensitively, falling back to a substring."""
+    needle = wanted.strip().lower()
+    names: list[str] = []
+    fuzzy = None
+
+    for sub in folder.Folders:
+        name = (_get(sub, "Name", "") or "").strip()
+        names.append(name)
+        if name.lower() == needle:
+            return sub
+        if fuzzy is None and needle in name.lower():
+            fuzzy = sub
+
+    if fuzzy is not None:
+        return fuzzy
+    raise LookupError(f"folder {wanted!r} not found. Available: {', '.join(names) or '(none)'}")
+
+
+def default_inbox(store: Any) -> Any:
+    """The store's own inbox, whatever the display language calls it."""
+    try:
+        folder = store.GetDefaultFolder(OL_FOLDER_INBOX)
+        if folder is not None:
+            return folder
+    except Exception:  # noqa: BLE001 - archive and public-folder stores have no default inbox
+        pass
+
+    root = store.GetRootFolder()
+    for sub in root.Folders:
+        if (_get(sub, "Name", "") or "").strip().lower() in INBOX_ALIASES:
+            return sub
+    raise LookupError(
+        f"store {_get(store, 'DisplayName', '?')!r} has no inbox; name a folder explicitly"
+    )
+
+
+def find_folder(store: Any, path: str | None) -> Any:
+    """Resolve a configured folder path against a store.
+
+    `None` means the store's inbox. A path may be nested ("Inbox/Dostawcy").
+    """
+    if not path or not path.strip():
+        return default_inbox(store)
+
+    # Either separator, because both look right to somebody.
+    steps = [step.strip() for step in path.replace("\\", "/").split("/") if step.strip()]
+    folder = store.GetRootFolder()
+    for step in steps:
+        folder = _child(folder, step)
+    return folder
+
+
+class OutlookMapiSource:
+    """A MailSource backed by a classic Outlook profile.
+
+    `store_name` is matched loosely and `folder_name` may be None, so a mailbox
+    can be configured by whatever a person can see in Outlook rather than by an
+    exact, locale-dependent string.
+    """
+
+    def __init__(self, store_name: str, folder_name: str | None = None) -> None:
         self.store_name = store_name
         self.folder_name = folder_name
 
     def _folder(self, namespace: Any) -> Any:
-        for store in namespace.Stores:
-            if _get(store, "DisplayName", "") != self.store_name:
-                continue
-            root = store.GetRootFolder()
-            for sub in root.Folders:
-                if sub.Name == self.folder_name:
-                    return sub
-            raise LookupError(f"folder {self.folder_name!r} not in store {self.store_name!r}")
-        raise LookupError(f"store {self.store_name!r} not in this Outlook profile")
+        return find_folder(find_store(namespace, self.store_name), self.folder_name)
 
     def fetch(self, since: datetime | None = None) -> Iterator[RawMessage]:
         import pythoncom  # noqa: PLC0415 - Windows-only, imported where it is used

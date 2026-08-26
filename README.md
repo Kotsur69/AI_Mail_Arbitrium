@@ -20,7 +20,7 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 |---|---|
 | Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB |
 | Outlook object model guard | does not fire — body, attachments and sender read without prompts |
-| Tests | 43 passing |
+| Tests | 71 passing |
 
 Not built yet: attachment parsing, persistence, web UI, CSV export, scheduling.
 
@@ -65,6 +65,7 @@ src/mail_analyzer/
   classify.py           the local model call
   normalize.py          quoted-history and disclaimer stripping
   review.py             what a human has to look at, and why
+  config.py             mailboxes as configuration, validated on load
   ingestion/
     base.py             RawMessage, dedupe key, MailSource protocol
     outlook_mapi.py     read-only Outlook COM adapter
@@ -95,15 +96,50 @@ bash scripts/fetch_models.sh          # GGUF weights into LM Studio's model tree
 
 Then load the model in LM Studio and start its server on `localhost:1234`.
 
+## Mailboxes
+
+Mailboxes are configuration, not command-line archaeology. Let Outlook write the
+file for you:
+
+```bash
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --init-config
+```
+
+That produces `config/mailboxes.toml` listing every store the Outlook profile can
+see, with archives and public folder trees switched off. Adding a mailbox later
+means adding three lines:
+
+```toml
+[[mailbox]]
+name = "dostawcy"                # what you type on the command line
+store = "zgody@firma.pl"         # matched loosely: address, display name, or a fragment
+folder = "Skrzynka odbiorcza"    # omit entirely to use the store's inbox
+since = 2026-07-25               # ignore anything received before this day
+```
+
+Two things there are deliberate. `store` is matched case-insensitively and by
+fragment, because a mailbox shows up in Outlook as an address, as a display name,
+or as either with a suffix, and which one a person types should not decide whether
+the run works. `folder` is optional, because Outlook names its folders in the
+display language — omit it and the store's own inbox is used, whatever it is
+called.
+
 ## Usage
 
 ```bash
 # What can Outlook see? Prints structure and counts only, never content.
-./.venv/Scripts/python.exe scripts/probe_outlook.py --list-stores
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --list-stores
 
-# Classify a mailbox.
+# One configured mailbox, or every enabled one.
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --mailbox dostawcy
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --all --limit 20
+
+# A mailbox that is not in the config file at all.
 ./.venv/Scripts/python.exe scripts/analyze_mailbox.py --store "you@example.com" --limit 15
 ```
+
+`--folder`, `--since` and `--limit` override the file for one run, so narrowing a
+run never means editing configuration.
 
 Subjects, senders and bodies are **redacted by default** — the CLI prints sender
 domains and hashed subject tags. Real content requires `--show-content`, and that flag

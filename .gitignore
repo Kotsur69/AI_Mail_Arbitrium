@@ -23,3 +23,6 @@ data/
 
 # The internal project brief -- contains stakeholder names and mailbox details.
 mail_analyzer.md
+
+# Real mailbox configuration -- contains internal addresses.
+config/mailboxes.toml
