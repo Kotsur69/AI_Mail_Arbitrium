@@ -25,6 +25,11 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 
 Not built yet: OCR for scanned attachments, persistence, web UI, CSV export, scheduling.
 
+The requirements this is built against are in [`docs/blueprint.md`](docs/blueprint.md) — the stakeholder questionnaire, the
+answers that came back, and the three-phase roadmap. Read it before adding a
+feature: several things that look like gaps are deliberate answers to a question
+in there.
+
 ## How it works
 
 ```
@@ -91,6 +96,8 @@ src/arbitrium/
   ingestion/
     base.py             RawMessage, dedupe key, MailSource protocol
     outlook_mapi.py     read-only Outlook COM adapter
+docs/
+  blueprint.md          the original requirements and roadmap
 scripts/
   probe_outlook.py      recon: stores, folders, guard behaviour (structure only)
   analyze_mailbox.py    Phase 1 CLI: read a mailbox, classify, print a table
