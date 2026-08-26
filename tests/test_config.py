@@ -127,3 +127,52 @@ def test_generated_names_stay_unique() -> None:
     text = config_text(["same@firma.pl", "same@inna.pl"])
 
     assert 'name = "same"' in text and 'name = "same-2"' in text
+
+
+# --- flag overrides ---------------------------------------------------------
+
+
+def args_for(*argv: str):
+    from analyze_mailbox import build_parser
+
+    return build_parser().parse_args(list(argv))
+
+
+def two_mailboxes() -> AppConfig:
+    return parse_config({"mailbox": [
+        {"name": "a", "store": "a@firma.pl", "limit": 0, "folder": "Inbox"},
+        {"name": "b", "store": "b@firma.pl", "limit": 0},
+    ]})
+
+
+def test_limit_applies_to_every_mailbox_under_all() -> None:
+    # Without this, --all --limit 5 reads whole inboxes.
+    from analyze_mailbox import selected
+
+    boxes = selected(args_for("--all", "--limit", "5"), two_mailboxes())
+
+    assert [box.limit for box in boxes] == [5, 5]
+
+
+def test_a_flag_overrides_the_file_for_one_run() -> None:
+    from analyze_mailbox import selected
+
+    boxes = selected(args_for("--mailbox", "a", "--folder", "Dostawcy"), two_mailboxes())
+
+    assert boxes[0].folder == "Dostawcy"
+
+
+def test_without_flags_the_file_is_used_as_written() -> None:
+    from analyze_mailbox import selected
+
+    boxes = selected(args_for("--mailbox", "a"), two_mailboxes())
+
+    assert (boxes[0].folder, boxes[0].limit) == ("Inbox", 0)
+
+
+def test_an_ad_hoc_store_needs_no_config_file() -> None:
+    from analyze_mailbox import selected
+
+    boxes = selected(args_for("--store", "c@firma.pl", "--limit", "3"), None)
+
+    assert (boxes[0].store, boxes[0].limit) == ("c@firma.pl", 3)

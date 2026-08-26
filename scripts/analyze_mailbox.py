@@ -196,23 +196,29 @@ def run_mailbox(box: MailboxConfig, classifier: Classifier, show_content: bool) 
     return run
 
 
-def selected(args: argparse.Namespace, config: AppConfig | None) -> list[MailboxConfig]:
-    """Which mailboxes this invocation asked for, from the config or from flags."""
-    if args.store:
-        return [MailboxConfig(name="adhoc", store=args.store, folder=args.folder,
-                              since=args.since, limit=args.limit or 0)]
-    if config is None:
-        return []
-    if args.all:
-        return list(config.enabled)
+def overridden(box: MailboxConfig, args: argparse.Namespace) -> MailboxConfig:
+    """This run's flags applied on top of the file.
 
-    # An explicit flag beats the file, so narrowing one run needs no edit.
-    box = config.mailbox(args.mailbox)
-    return [box.model_copy(update={
+    A flag always wins, and it wins for every selected mailbox -- narrowing a
+    run should never mean editing configuration, and --all --limit 5 must not
+    quietly read whole inboxes.
+    """
+    return box.model_copy(update={
         "folder": args.folder or box.folder,
         "since": args.since or box.since,
         "limit": box.limit if args.limit is None else args.limit,
-    })]
+    })
+
+
+def selected(args: argparse.Namespace, config: AppConfig | None) -> list[MailboxConfig]:
+    """Which mailboxes this invocation asked for, from the config or from flags."""
+    if args.store:
+        return [overridden(MailboxConfig(name="adhoc", store=args.store), args)]
+    if config is None:
+        return []
+
+    boxes = list(config.enabled) if args.all else [config.mailbox(args.mailbox)]
+    return [overridden(box, args) for box in boxes]
 
 
 def build_parser() -> argparse.ArgumentParser:
