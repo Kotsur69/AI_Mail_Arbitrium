@@ -1,4 +1,4 @@
-# AI Mail Arbitrium
+# AI_Mail_Arbitrium
 
 Classifies supplier replies in an Outlook mailbox with a **local** LLM, and tells you
 which ones a human still has to read.
@@ -20,7 +20,7 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 |---|---|
 | Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB |
 | Outlook object model guard | does not fire — body, attachments and sender read without prompts |
-| Tests | 71 passing |
+| Tests | 75 passing |
 
 Not built yet: attachment parsing, persistence, web UI, CSV export, scheduling.
 
