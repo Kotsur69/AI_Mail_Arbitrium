@@ -15,6 +15,7 @@ Examples:
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --list-stores
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --mailbox dostawcy
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --limit 20
+  .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --no-attachments
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --store you@firma.pl --show-content
 """
 
@@ -30,10 +31,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from arbitrium.attachments.base import Extraction  # noqa: E402
+from arbitrium.attachments.extract import attachment_text, extract_all  # noqa: E402
 from arbitrium.classify import Classifier  # noqa: E402
 from arbitrium.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     AppConfig,
+    AttachmentsConfig,
     LlmConfig,
     MailboxConfig,
     load_config,
@@ -41,7 +45,7 @@ from arbitrium.config import (  # noqa: E402
 from arbitrium.ingestion.base import RawMessage  # noqa: E402
 from arbitrium.ingestion.outlook_mapi import OutlookMapiSource  # noqa: E402
 from arbitrium.normalize import reply_text  # noqa: E402
-from arbitrium.review import review_reasons  # noqa: E402
+from arbitrium.review import review_reasons, supporting_status  # noqa: E402
 
 
 def tag(text: str) -> str:
@@ -126,6 +130,24 @@ def describe(message: RawMessage, show_content: bool) -> str:
     return f"{domain[:24]:24s} subj#{tag(message.subject)}  body {len(message.body):>6d} ch"
 
 
+def attachment_note(extractions: list[Extraction], show_content: bool) -> str:
+    """A compact account of the files on a message, redacted like everything else.
+
+    A filename is content -- "oferta_ArcelorMittal.pdf" names a supplier -- so
+    redacted rows carry counts and formats only.
+    """
+    if not extractions:
+        return ""
+    if show_content:
+        return "  att: " + ", ".join(
+            item.filename if item.has_text else f"{item.filename} ({item.error})"
+            for item in extractions
+        )
+    readable = sum(1 for item in extractions if item.has_text)
+    kinds = "/".join(sorted({item.kind.value for item in extractions}))
+    return f"  att {readable}/{len(extractions)} {kinds}"
+
+
 class Run:
     """What one mailbox produced, kept addable so several can share a total."""
 
@@ -133,18 +155,24 @@ class Run:
         self.statuses: Counter[str] = Counter()
         self.reasons: Counter[str] = Counter()
         self.domains: Counter[str] = Counter()
+        self.attachment_problems: Counter[str] = Counter()
         self.processed = 0
         self.queued = 0
         self.empty_bodies = 0
+        self.attachments_seen = 0
+        self.attachments_read = 0
         self.seconds = 0.0
 
     def absorb(self, other: Run) -> None:
         self.statuses += other.statuses
         self.reasons += other.reasons
         self.domains += other.domains
+        self.attachment_problems += other.attachment_problems
         self.processed += other.processed
         self.queued += other.queued
         self.empty_bodies += other.empty_bodies
+        self.attachments_seen += other.attachments_seen
+        self.attachments_read += other.attachments_read
         self.seconds += other.seconds
 
     def report(self, title: str) -> None:
@@ -161,9 +189,36 @@ class Run:
         print(f"review queue   : {self.queued}/{self.processed} "
               f"({self.queued * 100 // self.processed}%)  {dict(self.reasons)}")
         print(f"sender domains : {len(self.domains)} distinct")
+        if self.attachments_seen:
+            unreadable = f"  unread: {dict(self.attachment_problems)}" if self.attachment_problems else ""
+            print(f"attachments    : {self.attachments_read}/{self.attachments_seen} "
+                  f"with readable text{unreadable}")
 
 
-def run_mailbox(box: MailboxConfig, classifier: Classifier, show_content: bool) -> Run:
+def read_attachments(
+    message: RawMessage, settings: AttachmentsConfig, run: Run
+) -> tuple[list[Extraction], str]:
+    """Extract what the files on a message say, counting what could not be read."""
+    if not settings.enabled or not message.attachments:
+        return [], ""
+
+    extractions = extract_all(message.attachments)
+    run.attachments_seen += len(extractions)
+    for item in extractions:
+        if item.has_text:
+            run.attachments_read += 1
+        else:
+            run.attachment_problems[item.error or "nieznany powod"] += 1
+
+    return extractions, attachment_text(extractions, settings.max_chars)
+
+
+def run_mailbox(
+    box: MailboxConfig,
+    classifier: Classifier,
+    settings: AttachmentsConfig,
+    show_content: bool,
+) -> Run:
     """Classify one configured mailbox. A limit of 0 means everything."""
     source = OutlookMapiSource(store_name=box.store, folder_name=box.folder)
     run = Run()
@@ -173,13 +228,27 @@ def run_mailbox(box: MailboxConfig, classifier: Classifier, show_content: bool) 
         if box.limit and run.processed >= box.limit:
             break
 
-        text = reply_text(message.body)
-        if not text.strip():
+        body = reply_text(message.body)
+        extractions, attached = read_attachments(message, settings, run)
+
+        # A supplier who answers with nothing but a signed PDF has still
+        # answered, so the attachment stands in as the message when the body is
+        # empty. Counting that as silence would be the expensive kind of wrong.
+        source_text = body if body.strip() else attached
+        if not source_text.strip():
             run.empty_bodies += 1
             continue
 
-        verdict = classifier.classify(text)
-        why = review_reasons(verdict, text)
+        verdict = classifier.classify(source_text)
+
+        # A second call only when there is a body for the attachment to
+        # disagree with: the conflict is the finding, and when the attachment
+        # already is the message there is nothing to compare it against.
+        support = None
+        if attached.strip() and body.strip():
+            support = supporting_status(classifier.classify(attached), attached)
+
+        why = review_reasons(verdict, source_text, support)
         run.queued += bool(why)
         run.statuses[verdict.status] += 1
         for reason in why:
@@ -190,7 +259,8 @@ def run_mailbox(box: MailboxConfig, classifier: Classifier, show_content: bool) 
 
         flag = ",".join(r.value for r in why) or "AUTO"
         print(f"{run.processed:3d}  {verdict.status:11s} {flag:34s} "
-              f"{describe(message, show_content)}")
+              f"{describe(message, show_content)}"
+              f"{attachment_note(extractions, show_content)}")
 
     run.seconds = time.perf_counter() - started
     return run
@@ -230,6 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--folder", default=None, help="override the folder; default is the inbox")
     ap.add_argument("--since", help="YYYY-MM-DD; only messages received on or after")
     ap.add_argument("--limit", type=int, default=None, help="0 means no limit")
+    ap.add_argument("--no-attachments", action="store_true",
+                    help="classify bodies only, without opening any files")
     ap.add_argument("--show-content", action="store_true",
                     help="print real subjects and senders (a person is reading this)")
     ap.add_argument("--list-stores", action="store_true")
@@ -261,13 +333,17 @@ def main() -> int:
     llm = config.llm if config else LlmConfig()
     classifier = Classifier(base_url=llm.base_url, model=args.model or llm.model)
 
+    settings = config.attachments if config else AttachmentsConfig()
+    if args.no_attachments:
+        settings = settings.model_copy(update={"enabled": False})
+
     if not args.show_content:
         print("(content redacted -- pass --show-content to see subjects and senders)\n")
 
     total = Run()
     for box in boxes:
         print(f"\n=== {box.name}  [{box.store}] ===")
-        run = run_mailbox(box, classifier, args.show_content)
+        run = run_mailbox(box, classifier, settings, args.show_content)
         run.report(f"{box.name} ({box.store})")
         total.absorb(run)
 

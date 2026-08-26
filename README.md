@@ -18,28 +18,35 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 
 | | |
 |---|---|
-| Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB |
-| Outlook object model guard | does not fire — body, attachments and sender read without prompts |
-| Tests | 75 passing |
+| Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB; ~12 s where an attachment is classified too, since that is a second call |
+| Outlook object model guard | does not fire — body, sender, and attachment *content* all read without prompts |
+| Attachments | 15 files across 8 real messages: 13 were signature images, never loaded; 2 spreadsheets read |
+| Tests | 128 passing |
 
-Not built yet: attachment parsing, persistence, web UI, CSV export, scheduling.
+Not built yet: OCR for scanned attachments, persistence, web UI, CSV export, scheduling.
 
 ## How it works
 
 ```
 Outlook (COM, read-only)
-        │  RawMessage: message-id, sender, subject, body, attachment names
-        ▼
-normalize.py ── strips quoted history and confidentiality footers
-        ▼
-classify.py ── one message → one verdict, JSON-Schema constrained decoding
-        ▼
-review.py ── deterministic rules decide what a human must check
-        ▼
-per-supplier rollup  →  report
+        │  RawMessage: message-id, sender, subject, body, attachments
+        ├───────────────────────────────┐
+        ▼                               ▼
+normalize.py                            attachments/
+  strips quoted history                 pdf, docx, xlsx, txt → text
+  and confidentiality footers           in memory, nothing on disk
+        │                               │
+        └───────────────┬───────────────┘
+                        ▼
+        classify.py ── one message → one verdict,
+                        JSON-Schema constrained decoding
+                        ▼
+        review.py ── deterministic rules decide what a human must check
+                        ▼
+        per-supplier rollup  →  report
 ```
 
-Three decisions carry most of the design:
+Four decisions carry most of the design:
 
 **The model classifies one message and nothing else.** Every count, rollup and status
 precedence is computed in Python. The model is never asked to aggregate.
@@ -57,6 +64,18 @@ LM Studio returns `logprobs: null`. So `review.py` uses rules over the verdict i
 long enough to justify the call, does it conflict with the attachment. Cheap,
 auditable, and it explains itself to the reviewer.
 
+**The body and the attachments are judged separately, and disagreement is the
+finding.** A supplier whose covering note hedges while the signed annex agrees is
+exactly the case worth a person's attention, so the two are classified in separate
+calls and a conflict queues the message rather than being resolved silently. An
+attachment only gets a vote when its verdict is decisive *and* its quote is verbatim
+in the file — a price list should not be allowed to argue with a reply. Where the body
+is empty, the attachment is the message.
+
+That last rule is not theoretical thrift: on a real eight-message run, 13 of the 15
+attachments were signature logos. Kind is decided from the filename before any bytes
+move, so those 13 cost nothing.
+
 ## Layout
 
 ```
@@ -66,6 +85,9 @@ src/arbitrium/
   normalize.py          quoted-history and disclaimer stripping
   review.py             what a human has to look at, and why
   config.py             mailboxes as configuration, validated on load
+  attachments/
+    base.py             what a file is: kind, size, whether to open it at all
+    extract.py          pdf / docx / xlsx / txt → text, in memory
   ingestion/
     base.py             RawMessage, dedupe key, MailSource protocol
     outlook_mapi.py     read-only Outlook COM adapter
@@ -90,7 +112,7 @@ exposes no COM object model and cannot be used.
 
 ```bash
 python -m venv .venv
-./.venv/Scripts/python.exe -m pip install openai pydantic pytest pywin32
+./.venv/Scripts/python.exe -m pip install -e . pytest
 bash scripts/fetch_models.sh          # GGUF weights into LM Studio's model tree
 ```
 
@@ -139,7 +161,8 @@ called.
 ```
 
 `--folder`, `--since` and `--limit` override the file for one run, so narrowing a
-run never means editing configuration.
+run never means editing configuration. `--no-attachments` classifies bodies only,
+which is the fast path when a mailbox is mostly prose.
 
 Subjects, senders and bodies are **redacted by default** — the CLI prints sender
 domains and hashed subject tags. Real content requires `--show-content`, and that flag
@@ -157,6 +180,12 @@ receipt") is indistinguishable from consent, and it produces false positives on
 mailboxes that contain no request at all. The fix is to pass the campaign's own
 subject into the prompt and have the model judge relevance against it — which is only
 testable against a real supplier mailbox.
+
+Scanned attachments are the other gap. A PDF with no text layer is reported as one
+(`PDF bez warstwy tekstowej (skan?)`) rather than being silently read as empty, but
+reading it needs a vision model, which is not wired up yet. Old binary formats
+(`.doc`, `.xls`, `.rtf`) are named as unsupported for the same reason: a file we
+cannot read has to look different from a file that said nothing.
 
 ## Privacy
 

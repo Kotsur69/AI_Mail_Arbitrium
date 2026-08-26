@@ -66,6 +66,22 @@ def review_reasons(
     return reasons
 
 
+def supporting_status(verdict: MessageVerdict | None, source_text: str) -> Status | None:
+    """The status an attachment contributes to a message, or None for nothing.
+
+    Only a decisive, grounded verdict counts, and both exclusions are load-bearing.
+    An attachment the model called ambiguous is usually not a position at all --
+    a price list, a footer, a quoted policy -- and letting those disagree with
+    the body would queue nearly every message with a file on it. A quote that is
+    not verbatim in the attachment is not evidence the attachment said anything.
+    """
+    if verdict is None or verdict.status not in DECISIVE:
+        return None
+    if not is_grounded(verdict.evidence, source_text):
+        return None
+    return verdict.status
+
+
 def needs_review(
     verdict: MessageVerdict,
     source_text: str,

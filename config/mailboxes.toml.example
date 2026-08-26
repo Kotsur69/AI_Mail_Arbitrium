@@ -12,6 +12,13 @@
 base_url = "http://localhost:1234/v1"
 model = "qwen/qwen3-30b-a3b-2507"
 
+# Attachments are read in memory and classified alongside the body. When the
+# attachment disagrees with the body, the message goes to the review queue
+# rather than one of them being picked silently.
+[attachments]
+enabled = true
+max_chars = 12000   # cap on the combined attachment text handed to the model
+
 # Inherited by every [[mailbox]] below unless it says otherwise.
 [defaults]
 limit = 0          # 0 = no limit

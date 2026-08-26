@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterator, Protocol, runtime_checkable
 
+from arbitrium.attachments.base import Attachment
+
 
 @dataclass(frozen=True, slots=True)
 class RawMessage:
@@ -27,15 +29,19 @@ class RawMessage:
     subject: str
     body: str
     folder: str
-    attachment_names: tuple[str, ...] = field(default=())
+    attachments: tuple[Attachment, ...] = field(default=())
 
     @property
     def sender_domain(self) -> str | None:
         return sender_domain(self.sender_address)
 
     @property
+    def attachment_names(self) -> tuple[str, ...]:
+        return tuple(a.filename for a in self.attachments)
+
+    @property
     def has_attachments(self) -> bool:
-        return bool(self.attachment_names)
+        return bool(self.attachments)
 
 
 def sender_domain(address: str) -> str | None:

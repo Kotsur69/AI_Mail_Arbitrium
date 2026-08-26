@@ -33,6 +33,20 @@ class LlmConfig(BaseModel):
     model: str = "qwen/qwen3-30b-a3b-2507"
 
 
+class AttachmentsConfig(BaseModel):
+    """Whether attachments are read, and how much of them the model is shown.
+
+    On by default: a supplier who answers with a signed PDF and an empty body
+    has still answered, and the run that ignores the PDF records silence.
+    """
+
+    enabled: bool = True
+    # Matched to Classifier.max_body_chars on purpose. Set it higher and the
+    # classifier trims the tail itself, without the marker that tells a reviewer
+    # why a quote they can see in the file is not in the prompt.
+    max_chars: int = Field(default=12_000, ge=0, description="Cap on the combined text")
+
+
 class MailboxConfig(BaseModel):
     """One mailbox to analyse."""
 
@@ -65,6 +79,7 @@ class AppConfig(BaseModel):
     """The whole configuration file."""
 
     llm: LlmConfig = LlmConfig()
+    attachments: AttachmentsConfig = AttachmentsConfig()
     mailboxes: tuple[MailboxConfig, ...] = ()
 
     @field_validator("mailboxes")
@@ -100,6 +115,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     """Build an AppConfig from already-parsed TOML. Kept separate so it is testable."""
     return AppConfig(
         llm=LlmConfig(**raw.get("llm", {})),
+        attachments=AttachmentsConfig(**raw.get("attachments", {})),
         mailboxes=tuple(
             MailboxConfig(**entry)
             for entry in _merge_defaults(raw.get("defaults", {}), raw.get("mailbox", []))

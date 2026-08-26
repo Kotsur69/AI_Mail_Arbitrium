@@ -176,3 +176,24 @@ def test_an_ad_hoc_store_needs_no_config_file() -> None:
     boxes = selected(args_for("--store", "c@firma.pl", "--limit", "3"), None)
 
     assert (boxes[0].store, boxes[0].limit) == ("c@firma.pl", 3)
+
+
+def test_attachments_are_read_unless_the_file_says_otherwise() -> None:
+    # A supplier who answers with a signed PDF and an empty body has answered;
+    # defaulting this off would record that as silence.
+    config = parse_config({"mailbox": []})
+
+    assert config.attachments.enabled is True
+    assert config.attachments.max_chars == 12_000
+
+
+def test_attachments_can_be_switched_off_and_capped() -> None:
+    config = parse_config({"mailbox": [], "attachments": {"enabled": False, "max_chars": 500}})
+
+    assert config.attachments.enabled is False
+    assert config.attachments.max_chars == 500
+
+
+def test_a_negative_character_cap_is_rejected_on_load() -> None:
+    with pytest.raises(ValidationError):
+        parse_config({"mailbox": [], "attachments": {"max_chars": -1}})

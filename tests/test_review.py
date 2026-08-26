@@ -6,7 +6,7 @@ ambiguous mail, and LM Studio does not expose logprobs. So the review queue is
 filled by deterministic rules over the verdict, not by a probability.
 """
 
-from arbitrium.review import ReviewReason, needs_review, review_reasons
+from arbitrium.review import ReviewReason, needs_review, review_reasons, supporting_status
 from arbitrium.verdict import MessageVerdict
 
 BODY = "Dzien dobry,\n\nPotwierdzamy i akceptujemy proponowane warunki wspolpracy.\n\nPozdrawiam"
@@ -113,3 +113,50 @@ def test_ambiguous_reply_and_off_topic_never_share_a_bucket() -> None:
     assert ambiguous != off_topic
     assert ReviewReason.AMBIGUOUS_STATUS in ambiguous
     assert ReviewReason.OFF_TOPIC in off_topic
+
+
+# --- what an attachment is allowed to contribute ---------------------------
+
+ATTACHMENT = """Zalacznik nr 1
+
+Niniejszym wyrazamy zgode na proponowane warunki."""
+
+
+def test_a_grounded_decisive_attachment_contributes_its_status() -> None:
+    v = verdict(evidence="Niniejszym wyrazamy zgode")
+
+    assert supporting_status(v, ATTACHMENT) == "zgoda"
+
+
+def test_an_ambiguous_attachment_contributes_nothing() -> None:
+    # Otherwise a price list or a footer would disagree with every body and
+    # push the whole run into the review queue.
+    v = verdict(status="inne", evidence="Niniejszym wyrazamy zgode")
+
+    assert supporting_status(v, ATTACHMENT) is None
+
+
+def test_an_off_topic_attachment_contributes_nothing() -> None:
+    v = verdict(status="nie_dotyczy", evidence="Niniejszym wyrazamy zgode")
+
+    assert supporting_status(v, ATTACHMENT) is None
+
+
+def test_an_ungrounded_attachment_verdict_is_not_evidence_of_anything() -> None:
+    v = verdict(evidence="Podpisano i odeslano bez zastrzezen")
+
+    assert supporting_status(v, ATTACHMENT) is None
+
+
+def test_no_attachment_verdict_means_no_contribution() -> None:
+    assert supporting_status(None, ATTACHMENT) is None
+
+
+def test_a_signed_attachment_against_a_refusing_body_is_the_case_that_matters() -> None:
+    # The body hedges, the annex agrees. Nobody should resolve that silently.
+    body_verdict = verdict(status="brak_zgody", evidence="Potwierdzamy i akceptujemy")
+    contributed = supporting_status(verdict(evidence="wyrazamy zgode"), ATTACHMENT)
+
+    reasons = review_reasons(body_verdict, BODY, contributed)
+
+    assert ReviewReason.BODY_ATTACHMENT_CONFLICT in reasons

@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 from typing import Any, Iterator
 
+from arbitrium.attachments.base import Attachment
 from arbitrium.ingestion.base import RawMessage
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,9 @@ PR_INTERNET_MESSAGE_ID = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
 # SenderEmailAddress returns an X.500 DN for Exchange-internal senders, which
 # has no domain to group a supplier by. This proptag carries the real SMTP one.
 PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
+# The attachment's raw content. Reading it here keeps the file in memory --
+# SaveAsFile is the usual route and it puts supplier documents on disk.
+PR_ATTACH_DATA_BIN = "http://schemas.microsoft.com/mapi/proptag/0x37010102"
 
 # Outlook's Restrict parser wants US-format dates regardless of system locale.
 RESTRICT_DATE_FORMAT = "%m/%d/%Y %I:%M %p"
@@ -82,19 +86,50 @@ def sender_address(item: Any) -> str:
     return _get(item, "SenderEmailAddress", "") or ""
 
 
-def _attachment_names(item: Any) -> tuple[str, ...]:
+def _attachment_bytes(attachment: Any) -> bytes | None:
+    """The attachment's content, read straight out of the store.
+
+    Outlook refuses this property for some item types -- embedded messages, OLE
+    objects -- and None is the honest answer there. SaveAsFile would work around
+    it, at the cost of writing supplier contracts to disk; extraction is
+    in-memory precisely so that never happens, so the refusal is accepted and
+    reported instead.
+    """
     try:
-        attachments = item.Attachments
-        count = attachments.Count
+        raw = attachment.PropertyAccessor.GetProperty(PR_ATTACH_DATA_BIN)
+        return bytes(raw) if raw else None
+    except Exception:  # noqa: BLE001 - COM raises anything; one attachment must not stop the run
+        return None
+
+
+def _attachments(item: Any) -> tuple[Attachment, ...]:
+    """Every attachment, with bytes loaded only for the kinds we can read.
+
+    A signature logo is an attachment too. Pulling its content over COM buys
+    nothing, so only extractable kinds within the size cap are fetched.
+    """
+    try:
+        collection = item.Attachments
+        count = collection.Count
     except Exception:  # noqa: BLE001
         return ()
-    names: list[str] = []
+
+    found: list[Attachment] = []
     for index in range(1, count + 1):
         try:
-            names.append(attachments.Item(index).FileName or "")
+            com = collection.Item(index)
+            name = com.FileName or ""
         except Exception:  # noqa: BLE001
-            names.append("")
-    return tuple(n for n in names if n)
+            continue
+        if not name:
+            continue
+
+        size = _get(com, "Size")
+        stub = Attachment(name, size_bytes=size if isinstance(size, int) else None)
+        data = _attachment_bytes(com) if stub.is_extractable else None
+        found.append(Attachment(name, data, len(data) if data is not None else stub.size_bytes))
+
+    return tuple(found)
 
 
 def _received_at(item: Any) -> datetime | None:
@@ -120,7 +155,7 @@ def to_raw_message(item: Any, folder_name: str) -> RawMessage:
         subject=_get(item, "Subject", "") or "",
         body=_get(item, "Body", "") or "",
         folder=folder_name,
-        attachment_names=_attachment_names(item),
+        attachments=_attachments(item),
     )
 
 
