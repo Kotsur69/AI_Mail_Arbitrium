@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 from typing import Any, Iterator
 
-from mail_analyzer.ingestion.base import RawMessage
+from arbitrium.ingestion.base import RawMessage
 
 log = logging.getLogger(__name__)
 

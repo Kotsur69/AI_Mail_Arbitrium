@@ -30,7 +30,7 @@ from collections import Counter
 
 from openai import OpenAI
 
-from mail_analyzer.verdict import MessageVerdict, is_grounded
+from arbitrium.verdict import MessageVerdict, is_grounded
 from phase0_smoke import BASE_URL, CASES, MODEL, SYSTEM_PROMPT
 
 SAMPLES = 3

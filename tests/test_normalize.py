@@ -6,7 +6,7 @@ consent wording, it changed no verdicts at all. The value here is context
 economy and behaviour that stays predictable on threads longer than any tested.
 """
 
-from mail_analyzer.normalize import reply_text, strip_disclaimer
+from arbitrium.normalize import reply_text, strip_disclaimer
 
 REPLY = "Dzien dobry,\n\nPotwierdzamy i akceptujemy warunki.\n\nPozdrawiam\nJan Kowalski"
 

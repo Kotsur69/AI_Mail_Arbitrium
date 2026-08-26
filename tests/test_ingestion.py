@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mail_analyzer.ingestion.base import RawMessage, dedupe_key, sender_domain
-from mail_analyzer.ingestion.outlook_mapi import PR_INTERNET_MESSAGE_ID, PR_SMTP_ADDRESS
+from arbitrium.ingestion.base import RawMessage, dedupe_key, sender_domain
+from arbitrium.ingestion.outlook_mapi import PR_INTERNET_MESSAGE_ID, PR_SMTP_ADDRESS
 
 
 def msg(**over: object) -> RawMessage:
@@ -105,7 +105,7 @@ class FakePropertyAccessor:
 
 
 def test_mapi_item_maps_onto_the_shared_record() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import to_raw_message
+    from arbitrium.ingestion.outlook_mapi import to_raw_message
 
     item = FakeComItem(
         PropertyAccessor=FakePropertyAccessor(message_id="<abc@dostawca.pl>", smtp="jan@dostawca.pl"),
@@ -124,7 +124,7 @@ def test_mapi_item_maps_onto_the_shared_record() -> None:
 
 
 def test_one_unreadable_property_does_not_lose_the_message() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import to_raw_message
+    from arbitrium.ingestion.outlook_mapi import to_raw_message
 
     # Body blocked by the object model guard; everything else still readable.
     item = FakeComItem(
@@ -142,7 +142,7 @@ def test_one_unreadable_property_does_not_lose_the_message() -> None:
 
 
 def test_restrict_clause_uses_us_dates_whatever_the_system_locale() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import restrict_clause
+    from arbitrium.ingestion.outlook_mapi import restrict_clause
 
     clause = restrict_clause(datetime(2026, 8, 4, 0, 0))
 
@@ -150,8 +150,8 @@ def test_restrict_clause_uses_us_dates_whatever_the_system_locale() -> None:
 
 
 def test_outlook_source_satisfies_the_mail_source_protocol() -> None:
-    from mail_analyzer.ingestion.base import MailSource
-    from mail_analyzer.ingestion.outlook_mapi import OutlookMapiSource
+    from arbitrium.ingestion.base import MailSource
+    from arbitrium.ingestion.outlook_mapi import OutlookMapiSource
 
     assert isinstance(OutlookMapiSource("skrzynka@firma.pl"), MailSource)
 
@@ -166,7 +166,7 @@ class FakeSender:
 
 
 def test_exchange_dn_sender_is_resolved_to_a_real_smtp_address() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import sender_address
+    from arbitrium.ingestion.outlook_mapi import sender_address
 
     item = FakeComItem(
         PropertyAccessor=FakePropertyAccessor(smtp="jan.kowalski@firma.pl"),
@@ -177,7 +177,7 @@ def test_exchange_dn_sender_is_resolved_to_a_real_smtp_address() -> None:
 
 
 def test_sender_falls_back_to_the_exchange_user_when_the_proptag_is_blocked() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import sender_address
+    from arbitrium.ingestion.outlook_mapi import sender_address
 
     item = FakeComItem(
         PropertyAccessor=FakePropertyAccessor(smtp=RuntimeError("blocked")),
@@ -189,7 +189,7 @@ def test_sender_falls_back_to_the_exchange_user_when_the_proptag_is_blocked() ->
 
 
 def test_sender_keeps_the_plain_smtp_address_when_there_is_one() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import sender_address
+    from arbitrium.ingestion.outlook_mapi import sender_address
 
     item = FakeComItem(
         PropertyAccessor=FakePropertyAccessor(),
@@ -200,8 +200,8 @@ def test_sender_keeps_the_plain_smtp_address_when_there_is_one() -> None:
 
 
 def test_sender_returns_the_dn_rather_than_inventing_when_nothing_resolves() -> None:
-    from mail_analyzer.ingestion.base import sender_domain
-    from mail_analyzer.ingestion.outlook_mapi import sender_address
+    from arbitrium.ingestion.base import sender_domain
+    from arbitrium.ingestion.outlook_mapi import sender_address
 
     dn = "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=abc"
     item = FakeComItem(PropertyAccessor=FakePropertyAccessor(smtp=RuntimeError("no")), SenderEmailAddress=dn)
@@ -249,7 +249,7 @@ def store(display_name: str, *folder_names: str, inbox: str | None = None) -> Fa
 
 
 def test_store_is_found_by_its_exact_display_name() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_store
+    from arbitrium.ingestion.outlook_mapi import find_store
 
     ns = FakeNamespace(store("zgody@firma.pl"), store("you@firma.pl"))
 
@@ -257,7 +257,7 @@ def test_store_is_found_by_its_exact_display_name() -> None:
 
 
 def test_store_matching_ignores_case_and_padding() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_store
+    from arbitrium.ingestion.outlook_mapi import find_store
 
     ns = FakeNamespace(store("Zgody@Firma.pl"))
 
@@ -265,7 +265,7 @@ def test_store_matching_ignores_case_and_padding() -> None:
 
 
 def test_store_can_be_named_by_a_fragment() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_store
+    from arbitrium.ingestion.outlook_mapi import find_store
 
     ns = FakeNamespace(store("Zgody - Dostawcy (zgody@firma.pl)"))
 
@@ -273,7 +273,7 @@ def test_store_can_be_named_by_a_fragment() -> None:
 
 
 def test_an_exact_match_beats_a_loose_one() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_store
+    from arbitrium.ingestion.outlook_mapi import find_store
 
     ns = FakeNamespace(store("Archiwum zgody@firma.pl"), store("zgody@firma.pl"))
 
@@ -281,7 +281,7 @@ def test_an_exact_match_beats_a_loose_one() -> None:
 
 
 def test_an_unknown_store_error_lists_what_is_available() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_store
+    from arbitrium.ingestion.outlook_mapi import find_store
 
     ns = FakeNamespace(store("zgody@firma.pl"))
 
@@ -290,7 +290,7 @@ def test_an_unknown_store_error_lists_what_is_available() -> None:
 
 
 def test_no_folder_means_the_store_default_inbox() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     target = store("zgody@firma.pl", "Skrzynka odbiorcza", "Wyslane", inbox="Skrzynka odbiorcza")
 
@@ -298,7 +298,7 @@ def test_no_folder_means_the_store_default_inbox() -> None:
 
 
 def test_inbox_is_recognised_by_name_when_the_store_offers_no_default() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     # Shared and delegated stores routinely refuse GetDefaultFolder.
     target = store("zgody@firma.pl", "Wyslane", "Skrzynka odbiorcza")
@@ -307,14 +307,14 @@ def test_inbox_is_recognised_by_name_when_the_store_offers_no_default() -> None:
 
 
 def test_a_store_with_no_inbox_at_all_says_so() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     with pytest.raises(LookupError, match="no inbox"):
         find_folder(store("Archiwum", "2025", "2026"), None)
 
 
 def test_a_nested_folder_path_is_walked() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     inbox = FakeFolder("Skrzynka odbiorcza", FakeFolder("Dostawcy"))
     target = FakeStore("zgody@firma.pl", FakeFolder("root", inbox))
@@ -323,16 +323,16 @@ def test_a_nested_folder_path_is_walked() -> None:
 
 
 def test_either_path_separator_works() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     inbox = FakeFolder("Inbox", FakeFolder("Suppliers"))
     target = FakeStore("zgody@firma.pl", FakeFolder("root", inbox))
 
-    assert find_folder(target, "Inbox\Suppliers").Name == "Suppliers"
+    assert find_folder(target, r"Inbox\Suppliers").Name == "Suppliers"
 
 
 def test_folder_names_match_case_insensitively() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     target = FakeStore("zgody@firma.pl", FakeFolder("root", FakeFolder("Dostawcy")))
 
@@ -340,7 +340,7 @@ def test_folder_names_match_case_insensitively() -> None:
 
 
 def test_an_unknown_folder_error_lists_what_is_available() -> None:
-    from mail_analyzer.ingestion.outlook_mapi import find_folder
+    from arbitrium.ingestion.outlook_mapi import find_folder
 
     target = FakeStore("zgody@firma.pl", FakeFolder("root", FakeFolder("Dostawcy")))
 

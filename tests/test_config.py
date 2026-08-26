@@ -7,7 +7,7 @@ from datetime import date, datetime
 import pytest
 from pydantic import ValidationError
 
-from mail_analyzer.config import AppConfig, MailboxConfig, parse_config
+from arbitrium.config import AppConfig, MailboxConfig, parse_config
 
 RAW = {
     "llm": {"base_url": "http://localhost:9999/v1", "model": "some-model"},
@@ -114,7 +114,7 @@ def test_a_generated_config_parses_back(tmp_path) -> None:
     import tomllib
 
     from analyze_mailbox import config_text
-    from mail_analyzer.config import parse_config
+    from arbitrium.config import parse_config
 
     config = parse_config(tomllib.loads(config_text(["a@firma.pl", "b@firma.pl"])))
 

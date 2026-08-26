@@ -1,4 +1,4 @@
-# mail_analyzer
+# AI Mail Arbitrium
 
 Classifies supplier replies in an Outlook mailbox with a **local** LLM, and tells you
 which ones a human still has to read.
@@ -60,7 +60,7 @@ auditable, and it explains itself to the reviewer.
 ## Layout
 
 ```
-src/mail_analyzer/
+src/arbitrium/
   verdict.py            the LLM contract + the grounding check
   classify.py           the local model call
   normalize.py          quoted-history and disclaimer stripping

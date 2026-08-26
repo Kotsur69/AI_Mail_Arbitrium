@@ -13,7 +13,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from mail_analyzer.verdict import MessageVerdict
+from arbitrium.verdict import MessageVerdict
 
 DEFAULT_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_MODEL = "qwen/qwen3-30b-a3b-2507"

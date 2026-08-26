@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from mail_analyzer.verdict import MessageVerdict, Status, is_grounded
+from arbitrium.verdict import MessageVerdict, Status, is_grounded
 
 # A decisive verdict resting on a shorter quote than this is not justified.
 MIN_EVIDENCE_CHARS = 12

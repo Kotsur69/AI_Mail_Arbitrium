@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from openai import OpenAI
 
-from mail_analyzer.verdict import MessageVerdict, is_grounded
+from arbitrium.verdict import MessageVerdict, is_grounded
 
 BASE_URL = "http://localhost:1234/v1"
 MODEL = "qwen/qwen3-30b-a3b-2507"

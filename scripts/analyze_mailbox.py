@@ -30,18 +30,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from mail_analyzer.classify import Classifier  # noqa: E402
-from mail_analyzer.config import (  # noqa: E402
+from arbitrium.classify import Classifier  # noqa: E402
+from arbitrium.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     AppConfig,
     LlmConfig,
     MailboxConfig,
     load_config,
 )
-from mail_analyzer.ingestion.base import RawMessage  # noqa: E402
-from mail_analyzer.ingestion.outlook_mapi import OutlookMapiSource  # noqa: E402
-from mail_analyzer.normalize import reply_text  # noqa: E402
-from mail_analyzer.review import review_reasons  # noqa: E402
+from arbitrium.ingestion.base import RawMessage  # noqa: E402
+from arbitrium.ingestion.outlook_mapi import OutlookMapiSource  # noqa: E402
+from arbitrium.normalize import reply_text  # noqa: E402
+from arbitrium.review import review_reasons  # noqa: E402
 
 
 def tag(text: str) -> str:

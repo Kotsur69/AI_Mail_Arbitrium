@@ -6,8 +6,8 @@ ambiguous mail, and LM Studio does not expose logprobs. So the review queue is
 filled by deterministic rules over the verdict, not by a probability.
 """
 
-from mail_analyzer.review import ReviewReason, needs_review, review_reasons
-from mail_analyzer.verdict import MessageVerdict
+from arbitrium.review import ReviewReason, needs_review, review_reasons
+from arbitrium.verdict import MessageVerdict
 
 BODY = "Dzien dobry,\n\nPotwierdzamy i akceptujemy proponowane warunki wspolpracy.\n\nPozdrawiam"
 
