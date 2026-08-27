@@ -21,9 +21,9 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 | Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB; ~12 s where an attachment is classified too, since that is a second call |
 | Outlook object model guard | does not fire — body, sender, and attachment *content* all read without prompts |
 | Attachments | 15 files across 8 real messages: 13 were signature images, never loaded; 2 spreadsheets read |
-| Tests | 139 passing |
+| Tests | 152 passing |
 
-Not built yet: OCR for scanned attachments, persistence, web UI, scheduling.
+Not built yet: OCR for scanned attachments, web UI, scheduling.
 
 The requirements this is built against are in [`docs/blueprint.md`](docs/blueprint.md) — the stakeholder questionnaire, the
 answers that came back, and the three-phase roadmap. Read it before adding a
@@ -90,6 +90,8 @@ src/arbitrium/
   normalize.py          quoted-history and disclaimer stripping
   review.py             what a human has to look at, and why
   config.py             mailboxes as configuration, validated on load
+  export.py             the CSV a stakeholder opens, and the per-supplier rollup
+  store.py              verdicts on disk, so a backfill can be resumed
   attachments/
     base.py             what a file is: kind, size, whether to open it at all
     extract.py          pdf / docx / xlsx / txt → text, in memory
@@ -100,7 +102,7 @@ docs/
   blueprint.md          the original requirements and roadmap
 scripts/
   probe_outlook.py      recon: stores, folders, guard behaviour (structure only)
-  analyze_mailbox.py    Phase 1 CLI: read a mailbox, classify, print a table
+  analyze_mailbox.py    Phase 1 CLI: read a mailbox, classify, report, resume
   phase0_smoke.py       constrained decoding + grounding on hand-written cases
   phase0_confidence.py  the confidence experiment that failed
   fetch_models.sh       pull GGUF weights from Hugging Face
@@ -168,6 +170,12 @@ called.
 
 # Write the report a stakeholder opens.
 ./.venv/Scripts/python.exe scripts/analyze_mailbox.py --all --csv raport.csv
+
+# A backfill that survives being interrupted. Run it again and it carries on.
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --all --db data/arbitrium.db --csv raport.csv
+
+# Rebuild the report from what is already judged — no mail, no model, seconds.
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --report-only --db data/arbitrium.db --csv raport.csv
 ```
 
 `--csv raport.csv` writes two files: every message in `raport.csv`, and the
@@ -178,6 +186,19 @@ chosen so a person could edit it. No supplier-level verdict is derived: whether 
 later refusal overrides an earlier consent is a business rule nobody has agreed to yet.
 Unlike the console, **these files carry real subjects, senders and quotes** — a
 redacted report would be useless to the person it is for.
+
+`--db` records each verdict as it is reached and commits per message, so an
+interrupted run loses the message in flight rather than the hours before it. A later
+run skips what is already there, which is how the whole-mailbox backfill the blueprint
+asks for gets done in sittings. The key is the message ID, which survives Outlook
+moving an item between folders — archiving a message does not make it look
+unclassified. Only verdicts are stored, never message bodies.
+
+That skip is scoped to the model that produced the verdict: point `--model` at
+something bigger and it reclassifies rather than inheriting the smaller model's
+answers. `--reclassify` forces the same without changing model, which is what you want
+after editing the prompt. `--report-only` rebuilds the CSVs from the store alone, so
+changing a column costs seconds instead of another full run.
 
 `--folder`, `--since` and `--limit` override the file for one run, so narrowing a
 run never means editing configuration. `--no-attachments` classifies bodies only,

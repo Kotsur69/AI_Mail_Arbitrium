@@ -17,6 +17,8 @@ Examples:
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --limit 20
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --no-attachments
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --csv raport.csv
+  .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --db data/arbitrium.db
+  .venv/Scripts/python.exe scripts/analyze_mailbox.py --report-only --db data/arbitrium.db --csv raport.csv
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --store you@firma.pl --show-content
 """
 
@@ -27,6 +29,7 @@ import hashlib
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -35,12 +38,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from arbitrium.attachments.base import Extraction  # noqa: E402
 from arbitrium.attachments.extract import attachment_text, extract_all  # noqa: E402
 from arbitrium.classify import Classifier  # noqa: E402
-from arbitrium.export import (  # noqa: E402
-    MessageRecord,
-    suppliers_path,
-    write_messages_csv,
-    write_suppliers_csv,
-)
 from arbitrium.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     AppConfig,
@@ -49,10 +46,17 @@ from arbitrium.config import (  # noqa: E402
     MailboxConfig,
     load_config,
 )
-from arbitrium.ingestion.base import RawMessage  # noqa: E402
+from arbitrium.export import (  # noqa: E402
+    MessageRecord,
+    suppliers_path,
+    write_messages_csv,
+    write_suppliers_csv,
+)
+from arbitrium.ingestion.base import RawMessage, dedupe_key  # noqa: E402
 from arbitrium.ingestion.outlook_mapi import OutlookMapiSource  # noqa: E402
 from arbitrium.normalize import reply_text  # noqa: E402
 from arbitrium.review import review_reasons, supporting_status  # noqa: E402
+from arbitrium.store import VerdictStore  # noqa: E402
 
 
 def tag(text: str) -> str:
@@ -155,11 +159,32 @@ def attachment_note(extractions: list[Extraction], show_content: bool) -> str:
     return f"  att {readable}/{len(extractions)} {kinds}"
 
 
+@dataclass(frozen=True, slots=True)
+class Backfill:
+    """The store a run resumes from, and what it already holds.
+
+    Constructed even without --db, with no store and an empty set, so the
+    classify loop has one code path rather than a branch on every message.
+    """
+
+    model: str
+    store: VerdictStore | None = None
+    seen: frozenset[str] = frozenset()
+
+    def done(self, key: str) -> bool:
+        return key in self.seen
+
+    def keep(self, key: str, record: MessageRecord) -> None:
+        if self.store is not None:
+            self.store.save(key, record, self.model)
+
+
 class Run:
     """What one mailbox produced, kept addable so several can share a total."""
 
     def __init__(self) -> None:
         self.records: list[MessageRecord] = []
+        self.skipped_known = 0
         self.statuses: Counter[str] = Counter()
         self.reasons: Counter[str] = Counter()
         self.domains: Counter[str] = Counter()
@@ -173,6 +198,7 @@ class Run:
 
     def absorb(self, other: Run) -> None:
         self.records += other.records
+        self.skipped_known += other.skipped_known
         self.statuses += other.statuses
         self.reasons += other.reasons
         self.domains += other.domains
@@ -187,6 +213,8 @@ class Run:
     def report(self, title: str) -> None:
         print("\n" + "-" * 78)
         print(f"mailbox        : {title}")
+        if self.skipped_known:
+            print(f"already judged : {self.skipped_known} kept from an earlier run")
         if not self.processed:
             print("classified     : 0 messages")
             return
@@ -227,6 +255,7 @@ def run_mailbox(
     classifier: Classifier,
     settings: AttachmentsConfig,
     show_content: bool,
+    resume: Backfill,
 ) -> Run:
     """Classify one configured mailbox. A limit of 0 means everything."""
     source = OutlookMapiSource(store_name=box.store, folder_name=box.folder)
@@ -236,6 +265,13 @@ def run_mailbox(
     for message in source.fetch(since=box.since_datetime):
         if box.limit and run.processed >= box.limit:
             break
+
+        # Checked before anything is read or extracted, and before the limit
+        # counts it, so --limit 20 on a resumed run means twenty *new* messages.
+        key = dedupe_key(message)
+        if resume.done(key):
+            run.skipped_known += 1
+            continue
 
         body = reply_text(message.body)
         extractions, attached = read_attachments(message, settings, run)
@@ -258,7 +294,7 @@ def run_mailbox(
             support = supporting_status(classifier.classify(attached), attached)
 
         why = review_reasons(verdict, source_text, support)
-        run.records.append(MessageRecord(
+        entry = MessageRecord(
             mailbox=box.name,
             supplier=message.sender_domain,
             sender=message.sender_address,
@@ -271,7 +307,9 @@ def run_mailbox(
             attachments_total=len(extractions),
             attachments_read=sum(1 for item in extractions if item.has_text),
             attachment_status=support,
-        ))
+        )
+        run.records.append(entry)
+        resume.keep(key, entry)
         run.queued += bool(why)
         run.statuses[verdict.status] += 1
         for reason in why:
@@ -327,6 +365,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="classify bodies only, without opening any files")
     ap.add_argument("--csv", type=Path, default=None,
                     help="write the report to this file, plus a per-supplier rollup beside it")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="SQLite file to record verdicts in, so an interrupted run resumes")
+    ap.add_argument("--reclassify", action="store_true",
+                    help="judge everything again, ignoring what the store already holds")
+    ap.add_argument("--report-only", action="store_true",
+                    help="write the CSV from --db without reading mail or loading the model")
     ap.add_argument("--show-content", action="store_true",
                     help="print real subjects and senders (a person is reading this)")
     ap.add_argument("--list-stores", action="store_true")
@@ -337,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def write_report(path: Path, run: Run) -> None:
+def write_report(path: Path, records: list[MessageRecord]) -> None:
     """Write both report files and say plainly what is in them.
 
     The console redacts because its output reaches an assistant's context. These
@@ -345,15 +389,30 @@ def write_report(path: Path, run: Run) -> None:
     was chosen for -- so they carry real content, and the run says so out loud
     rather than letting someone discover it by pasting one into a chat.
     """
-    if not run.records:
+    if not records:
         print("\nnothing classified, so no report was written")
         return
 
-    messages = write_messages_csv(path, run.records)
-    suppliers = write_suppliers_csv(suppliers_path(path), run.records)
-    print(f"\nwrote {messages}  ({len(run.records)} messages)")
+    messages = write_messages_csv(path, records)
+    suppliers = write_suppliers_csv(suppliers_path(path), records)
+    print(f"\nwrote {messages}  ({len(records)} messages)")
     print(f"wrote {suppliers}  (grouped by supplier, `decyzja` column left for you)")
     print("both files contain real subjects, senders and quotes -- do not paste them into a chat")
+
+
+def stored_report(args: argparse.Namespace) -> int:
+    """Rebuild the CSV from verdicts already on disk, touching neither mail nor model.
+
+    This is what the store buys beyond resumability: changing a column, or
+    reopening a report someone closed, costs seconds instead of hours.
+    """
+    if not (args.db and args.csv):
+        print("--report-only needs --db to read from and --csv to write to")
+        return 1
+
+    with VerdictStore(args.db) as store:
+        write_report(args.csv, store.records(mailboxes=[args.mailbox] if args.mailbox else None))
+    return 0
 
 
 def main() -> int:
@@ -364,6 +423,8 @@ def main() -> int:
         return list_stores()
     if args.init_config:
         return init_config(args.config, force=args.force)
+    if args.report_only:
+        return stored_report(args)
     if not (args.mailbox or args.all or args.store):
         ap.error("pass --mailbox NAME, --all, or --store ADDRESS (see --list-stores)")
 
@@ -375,7 +436,8 @@ def main() -> int:
         return 1
 
     llm = config.llm if config else LlmConfig()
-    classifier = Classifier(base_url=llm.base_url, model=args.model or llm.model)
+    model = args.model or llm.model
+    classifier = Classifier(base_url=llm.base_url, model=model)
 
     settings = config.attachments if config else AttachmentsConfig()
     if args.no_attachments:
@@ -384,18 +446,39 @@ def main() -> int:
     if not args.show_content:
         print("(content redacted -- pass --show-content to see subjects and senders)\n")
 
+    names = [box.name for box in boxes]
+    store = VerdictStore(args.db) if args.db else None
+    resume = Backfill(
+        model=model,
+        store=store,
+        # --reclassify keeps the store but stops it being trusted, which is what
+        # you want after changing the prompt rather than the model.
+        seen=frozenset(
+            () if store is None or args.reclassify
+            else store.classified_keys(mailboxes=names, model=model)
+        ),
+    )
+    if resume.seen:
+        print(f"resuming: {len(resume.seen)} messages already judged by {model}\n")
+
     total = Run()
-    for box in boxes:
-        print(f"\n=== {box.name}  [{box.store}] ===")
-        run = run_mailbox(box, classifier, settings, args.show_content)
-        run.report(f"{box.name} ({box.store})")
-        total.absorb(run)
+    try:
+        for box in boxes:
+            print(f"\n=== {box.name}  [{box.store}] ===")
+            run = run_mailbox(box, classifier, settings, args.show_content, resume)
+            run.report(f"{box.name} ({box.store})")
+            total.absorb(run)
 
-    if len(boxes) > 1:
-        total.report(f"TOTAL over {len(boxes)} mailboxes")
+        if len(boxes) > 1:
+            total.report(f"TOTAL over {len(boxes)} mailboxes")
 
-    if args.csv:
-        write_report(args.csv, total)
+        if args.csv:
+            # From the store when there is one, so a resumed run reports the
+            # whole backfill rather than only what this session happened to add.
+            write_report(args.csv, store.records(mailboxes=names) if store else total.records)
+    finally:
+        if store is not None:
+            store.close()
     return 0
 
 
