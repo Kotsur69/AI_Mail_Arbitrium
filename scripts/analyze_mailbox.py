@@ -37,13 +37,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from arbitrium.attachments.base import Extraction  # noqa: E402
 from arbitrium.attachments.extract import attachment_text, extract_all  # noqa: E402
+from arbitrium.attachments.vision import VisionReader  # noqa: E402
 from arbitrium.classify import Classifier  # noqa: E402
 from arbitrium.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     AppConfig,
     AttachmentsConfig,
+    CampaignConfig,
     LlmConfig,
     MailboxConfig,
+    VisionConfig,
     load_config,
 )
 from arbitrium.export import (  # noqa: E402
@@ -194,6 +197,7 @@ class Run:
         self.empty_bodies = 0
         self.attachments_seen = 0
         self.attachments_read = 0
+        self.attachments_transcribed = 0
         self.seconds = 0.0
 
     def absorb(self, other: Run) -> None:
@@ -208,6 +212,7 @@ class Run:
         self.empty_bodies += other.empty_bodies
         self.attachments_seen += other.attachments_seen
         self.attachments_read += other.attachments_read
+        self.attachments_transcribed += other.attachments_transcribed
         self.seconds += other.seconds
 
     def report(self, title: str) -> None:
@@ -230,20 +235,27 @@ class Run:
             unreadable = f"  unread: {dict(self.attachment_problems)}" if self.attachment_problems else ""
             print(f"attachments    : {self.attachments_read}/{self.attachments_seen} "
                   f"with readable text{unreadable}")
+        if self.attachments_transcribed:
+            print(f"scans read     : {self.attachments_transcribed} by the vision model "
+                  f"-- each queued for a person to confirm")
 
 
 def read_attachments(
-    message: RawMessage, settings: AttachmentsConfig, run: Run
+    message: RawMessage,
+    settings: AttachmentsConfig,
+    run: Run,
+    vision: VisionReader | None = None,
 ) -> tuple[list[Extraction], str]:
     """Extract what the files on a message say, counting what could not be read."""
     if not settings.enabled or not message.attachments:
         return [], ""
 
-    extractions = extract_all(message.attachments)
+    extractions = extract_all(message.attachments, vision)
     run.attachments_seen += len(extractions)
     for item in extractions:
         if item.has_text:
             run.attachments_read += 1
+            run.attachments_transcribed += item.via_vision
         else:
             run.attachment_problems[item.error or "nieznany powod"] += 1
 
@@ -256,9 +268,12 @@ def run_mailbox(
     settings: AttachmentsConfig,
     show_content: bool,
     resume: Backfill,
+    vision: VisionReader | None = None,
 ) -> Run:
     """Classify one configured mailbox. A limit of 0 means everything."""
-    source = OutlookMapiSource(store_name=box.store, folder_name=box.folder)
+    source = OutlookMapiSource(
+        store_name=box.store, folder_name=box.folder, load_images=vision is not None
+    )
     run = Run()
     started = time.perf_counter()
 
@@ -274,7 +289,7 @@ def run_mailbox(
             continue
 
         body = reply_text(message.body)
-        extractions, attached = read_attachments(message, settings, run)
+        extractions, attached = read_attachments(message, settings, run, vision)
 
         # A supplier who answers with nothing but a signed PDF has still
         # answered, so the attachment stands in as the message when the body is
@@ -293,7 +308,14 @@ def run_mailbox(
         if attached.strip() and body.strip():
             support = supporting_status(classifier.classify(attached), attached)
 
-        why = review_reasons(verdict, source_text, support)
+        # Only flag the transcript when it actually fed a verdict: as the
+        # message itself where the body was empty, or as the attachment's vote.
+        # A scan the model called ambiguous changed nothing, and queueing on it
+        # would be a caveat about evidence nobody used.
+        transcribed = any(item.via_vision and item.has_text for item in extractions)
+        from_vision = transcribed and (not body.strip() or support is not None)
+
+        why = review_reasons(verdict, source_text, support, from_vision)
         entry = MessageRecord(
             mailbox=box.name,
             supplier=message.sender_domain,
@@ -363,6 +385,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=None, help="0 means no limit")
     ap.add_argument("--no-attachments", action="store_true",
                     help="classify bodies only, without opening any files")
+    ap.add_argument("--vision", action="store_true",
+                    help="read scanned PDFs and photographed pages with a vision model")
+    ap.add_argument("--no-vision", action="store_true",
+                    help="leave scans unread even if the config file enables vision")
+    ap.add_argument("--vision-model", default=None,
+                    help="override the vision model named in the config")
     ap.add_argument("--csv", type=Path, default=None,
                     help="write the report to this file, plus a per-supplier rollup beside it")
     ap.add_argument("--db", type=Path, default=None,
@@ -379,6 +407,33 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--force", action="store_true", help="let --init-config overwrite")
     ap.add_argument("--model", default=None, help="override the model named in the config")
     return ap
+
+
+def build_vision(
+    settings: VisionConfig,
+    llm: LlmConfig,
+    args: argparse.Namespace,
+    attachments: AttachmentsConfig,
+) -> VisionReader | None:
+    """The vision reader this run should use, or None to leave scans unread.
+
+    Returning None rather than a disabled reader is deliberate: it is the same
+    value the whole pipeline already understood to mean "no vision", so every
+    call site keeps one branch instead of two, and the Outlook adapter can key
+    off it to decide whether image bytes are worth pulling at all.
+    """
+    wanted = args.vision or (settings.enabled and not args.no_vision)
+    if args.no_vision or not wanted or not attachments.enabled:
+        return None
+
+    model = args.vision_model or settings.model
+    print(f"vision: scans will be read by {model} "
+          f"(each one queued for a person to confirm)\n")
+    return VisionReader(
+        base_url=settings.base_url or llm.base_url,
+        model=model,
+        max_pages=settings.max_pages,
+    )
 
 
 def write_report(path: Path, records: list[MessageRecord]) -> None:
@@ -437,11 +492,22 @@ def main() -> int:
 
     llm = config.llm if config else LlmConfig()
     model = args.model or llm.model
-    classifier = Classifier(base_url=llm.base_url, model=model)
+
+    campaign = config.campaign if config else CampaignConfig()
+    if campaign.configured:
+        print(f"campaign: judging replies against {campaign.subject or '(no subject)'!r}\n")
+    else:
+        print("no [campaign] configured -- replies are judged without knowing what was "
+              "asked, which reads 'Potwierdzam odbior' as consent. See the README.\n")
+    classifier = Classifier(
+        base_url=llm.base_url, model=model, campaign=campaign.as_prompt_text()
+    )
 
     settings = config.attachments if config else AttachmentsConfig()
     if args.no_attachments:
         settings = settings.model_copy(update={"enabled": False})
+
+    vision = build_vision(config.vision if config else VisionConfig(), llm, args, settings)
 
     if not args.show_content:
         print("(content redacted -- pass --show-content to see subjects and senders)\n")
@@ -465,7 +531,7 @@ def main() -> int:
     try:
         for box in boxes:
             print(f"\n=== {box.name}  [{box.store}] ===")
-            run = run_mailbox(box, classifier, settings, args.show_content, resume)
+            run = run_mailbox(box, classifier, settings, args.show_content, resume, vision)
             run.report(f"{box.name} ({box.store})")
             total.absorb(run)
 

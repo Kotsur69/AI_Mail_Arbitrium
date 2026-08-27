@@ -64,6 +64,13 @@ EXTRACTABLE: frozenset[Kind] = frozenset({Kind.PDF, Kind.DOCX, Kind.XLSX, Kind.T
 # more than it can possibly say.
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
+# The first gate on whether an image is worth pulling over COM for a vision
+# model. Byte size is all Outlook offers before the content is fetched, and a
+# scanned page is simply bigger than a signature strip. Deliberately generous:
+# this only decides what gets loaded, and the pixel dimensions decide what gets
+# sent, so an over-admitted logo costs a COM read and never a model call.
+MIN_SCAN_BYTES = 25 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class Attachment:
@@ -92,6 +99,21 @@ class Attachment:
             return False
         return self.size_bytes is None or self.size_bytes <= MAX_ATTACHMENT_BYTES
 
+    @property
+    def is_scan_candidate(self) -> bool:
+        """Whether this image might be a scanned page, and so worth loading.
+
+        Only consulted when a vision model is configured. An unknown size is
+        admitted rather than rejected: the dimensions check that follows is the
+        one that actually decides, and refusing here would silently drop the
+        scans of whichever mail source cannot report a size.
+        """
+        if self.kind is not Kind.IMAGE:
+            return False
+        if self.size_bytes is None:
+            return True
+        return MIN_SCAN_BYTES <= self.size_bytes <= MAX_ATTACHMENT_BYTES
+
 
 @dataclass(frozen=True, slots=True)
 class Extraction:
@@ -101,6 +123,13 @@ class Extraction:
     kind: Kind
     text: str = ""
     error: str | None = None
+    via_vision: bool = False
+    """True when the text was transcribed off a scan rather than extracted.
+
+    Carried all the way to the review queue, because the grounding check cannot
+    tell the difference: the quote and the source are then both the model's own
+    transcription, so a misread word agrees with itself. A person confirms it.
+    """
 
     @property
     def has_text(self) -> bool:

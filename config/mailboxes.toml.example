@@ -12,6 +12,32 @@
 base_url = "http://localhost:1234/v1"
 model = "qwen/qwen3-30b-a3b-2507"
 
+# What the suppliers were actually asked. Fill this in -- it is the difference
+# between the model judging "does this message agree?" and "does this message
+# agree to THIS?". Without it, "Potwierdzam odbior" is scored as consent,
+# because on its own terms it is a confirmation of something.
+[campaign]
+subject = "Zgoda na zmiane warunkow platnosci od 2026-09-01"
+description = """
+Prosimy o potwierdzenie zgody na wydluzenie terminu platnosci do 60 dni
+dla zamowien skladanych po 1 wrzesnia 2026.
+"""
+
+# Scanned consents: a printed request, signed, scanned, sent back as a PDF or a
+# photograph. Off by default because it needs a SECOND model loaded in LM Studio
+# alongside the classifier -- switch it on only once that model is loaded, or
+# every scan costs a failed call.
+#
+# The vision model only ever transcribes; the usual classifier still decides.
+# Every message read this way is queued for a person, because the grounding
+# check cannot catch a misread word: the quote and the source are then both the
+# transcription.
+[vision]
+enabled = false
+model = "qwen2.5-vl-32b-instruct"
+# base_url = "http://localhost:1234/v1"   # omit to share the classifier's endpoint
+max_pages = 4      # pages of one scanned document sent in a single call
+
 # Attachments are read in memory and classified alongside the body. When the
 # attachment disagrees with the body, the message goes to the review queue
 # rather than one of them being picked silently.

@@ -10,14 +10,24 @@ name individually rather than lump into "failed":
   * an encrypted PDF, which is a password nobody has, not a broken file;
   * a PDF with no text layer, which is a scan -- the point where a vision model
     is the only remaining option, and the reason this returns a reason.
+
+That second case now has somewhere to go. Hand `extract` a `VisionReader` and a
+scan is transcribed instead of refused; leave it out and the behaviour is
+exactly what it was, down to the wording of the error. The transcription is
+marked `via_vision` the whole way, because text a model read off pixels is not
+the same evidence as text a parser lifted out of a file.
 """
 
 from __future__ import annotations
 
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 from arbitrium.attachments.base import Attachment, Extraction, Kind
 from arbitrium.normalize import clean_whitespace
+
+if TYPE_CHECKING:
+    from arbitrium.attachments.vision import VisionReader
 
 # One signed consent runs a page or two; twenty thousand characters is already
 # far past that. Beyond it the text is boilerplate the model pays for by token.
@@ -119,9 +129,40 @@ def truncate(text: str, limit: int = MAX_CHARS_PER_ATTACHMENT) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + TRUNCATED
 
 
-def extract(attachment: Attachment) -> Extraction:
+def _transcribe(
+    attachment: Attachment, kind: Kind, images: list[bytes], vision: VisionReader
+) -> Extraction:
+    """Read page images with the vision model, reporting rather than raising.
+
+    A vision model is the most failure-prone thing in this pipeline -- it is the
+    one part that needs a second set of weights loaded -- so every way it can go
+    wrong ends as a reason on the record. "No VL model loaded in LM Studio" is
+    the everyday case, and it must not take the run down with it.
+    """
+    try:
+        raw = vision.transcribe(images)
+    except Exception as exc:  # noqa: BLE001 - an absent model is a reason, not a crash
+        detail = str(exc) or exc.__class__.__name__
+        return Extraction(attachment.filename, kind, error=f"model wizyjny: {detail}")
+
+    text = truncate(clean_whitespace(raw))
+    if not text.strip():
+        return Extraction(attachment.filename, kind, error="model wizyjny nie odczytal tekstu")
+    return Extraction(attachment.filename, kind, text=text, via_vision=True)
+
+
+def extract(attachment: Attachment, vision: VisionReader | None = None) -> Extraction:
     """Read one attachment. Always returns a record -- text or a stated reason."""
     kind = attachment.kind
+
+    # A scan that arrived as a picture rather than inside a PDF. Checked before
+    # the reader table, because there is no parser for it to fall out of, and
+    # gated on looking like a page so signature logos never reach the model.
+    if kind is Kind.IMAGE and vision is not None and attachment.data is not None:
+        from arbitrium.attachments.vision import looks_like_scan  # noqa: PLC0415
+
+        if looks_like_scan(attachment.data):
+            return _transcribe(attachment, kind, [attachment.data], vision)
 
     if kind not in READERS:
         return Extraction(attachment.filename, kind, error=NOT_READ.get(kind, "pominiety"))
@@ -131,6 +172,15 @@ def extract(attachment: Attachment) -> Extraction:
     try:
         raw = READERS[kind](attachment.data)
     except Exception as exc:  # noqa: BLE001 - a malformed file must not end the run
+        # The no-text-layer case lands here, which is exactly where the pixels
+        # are still available. An encrypted PDF also lands here and yields no
+        # images, so it keeps its own, more useful, error.
+        if kind is Kind.PDF and vision is not None:
+            from arbitrium.attachments.vision import page_images  # noqa: PLC0415
+
+            images = page_images(attachment.data)
+            if images:
+                return _transcribe(attachment, kind, images, vision)
         return Extraction(attachment.filename, kind, error=str(exc) or exc.__class__.__name__)
 
     text = truncate(clean_whitespace(raw))
@@ -139,8 +189,10 @@ def extract(attachment: Attachment) -> Extraction:
     return Extraction(attachment.filename, kind, text=text)
 
 
-def extract_all(attachments: tuple[Attachment, ...]) -> list[Extraction]:
-    return [extract(attachment) for attachment in attachments]
+def extract_all(
+    attachments: tuple[Attachment, ...], vision: VisionReader | None = None
+) -> list[Extraction]:
+    return [extract(attachment, vision) for attachment in attachments]
 
 
 def attachment_text(extractions: list[Extraction], limit: int = MAX_CHARS_PER_ATTACHMENT) -> str:

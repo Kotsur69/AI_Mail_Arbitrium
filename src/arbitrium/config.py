@@ -47,6 +47,61 @@ class AttachmentsConfig(BaseModel):
     max_chars: int = Field(default=12_000, ge=0, description="Cap on the combined text")
 
 
+class CampaignConfig(BaseModel):
+    """The request the suppliers were actually sent.
+
+    Without this the classifier is asked whether a message "expresses
+    agreement" while never being shown what the agreement is about, and
+    "Potwierdzam odbior" becomes consent -- a false positive measured on a real
+    inbox, and the project's one documented accuracy limitation.
+
+    Empty by default, and empty means absent rather than "a request with no
+    subject": a run against a mailbox nobody has described should behave exactly
+    as it did before, not as though the campaign were blank.
+    """
+
+    subject: str = Field(default="", description="Subject line the request went out under")
+    description: str = Field(
+        default="", description="What the suppliers were actually asked to agree to"
+    )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.subject.strip() or self.description.strip())
+
+    def as_prompt_text(self) -> str:
+        """The campaign as the classifier should read it, or "" for none."""
+        if not self.configured:
+            return ""
+        lines = []
+        if self.subject.strip():
+            lines.append(f"Temat: {self.subject.strip()}")
+        if self.description.strip():
+            lines.append(f"Tresc prosby: {self.description.strip()}")
+        return "\n".join(lines)
+
+
+class VisionConfig(BaseModel):
+    """Whether scanned attachments are read, and by which model.
+
+    Off by default, unlike attachments. It needs a second set of weights
+    resident in LM Studio alongside the classifier, and a backfill that reported
+    every scan as unreadable is a better failure than one that dies at message
+    four hundred because nobody loaded the vision model.
+    """
+
+    enabled: bool = False
+    model: str = "qwen2.5-vl-32b-instruct"
+    base_url: str | None = Field(
+        default=None,
+        description="Endpoint serving the vision model. None means share the classifier's, "
+        "which is right whenever LM Studio has both models loaded at once.",
+    )
+    max_pages: int = Field(
+        default=4, ge=1, description="Pages of one scanned document sent to the model"
+    )
+
+
 class MailboxConfig(BaseModel):
     """One mailbox to analyse."""
 
@@ -80,6 +135,8 @@ class AppConfig(BaseModel):
 
     llm: LlmConfig = LlmConfig()
     attachments: AttachmentsConfig = AttachmentsConfig()
+    vision: VisionConfig = VisionConfig()
+    campaign: CampaignConfig = CampaignConfig()
     mailboxes: tuple[MailboxConfig, ...] = ()
 
     @field_validator("mailboxes")
@@ -116,6 +173,8 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     return AppConfig(
         llm=LlmConfig(**raw.get("llm", {})),
         attachments=AttachmentsConfig(**raw.get("attachments", {})),
+        vision=VisionConfig(**raw.get("vision", {})),
+        campaign=CampaignConfig(**raw.get("campaign", {})),
         mailboxes=tuple(
             MailboxConfig(**entry)
             for entry in _merge_defaults(raw.get("defaults", {}), raw.get("mailbox", []))

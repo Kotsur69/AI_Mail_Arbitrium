@@ -5,9 +5,10 @@ requires-python = ">=3.11"
 dependencies = [
     "openai>=1.0",       # OpenAI-compatible client, pointed at a local server
     "pydantic>=2.0",     # the verdict schema, and the config file
-    "pypdf>=5.0",        # PDF attachments
+    "pypdf>=5.0",        # PDF attachments, and the page images inside a scan
     "python-docx>=1.0",  # .docx attachments
     "openpyxl>=3.1",     # .xlsx attachments
+    "pillow>=10.0",      # decode and size page images before a vision model sees them
     "pywin32>=306; sys_platform == 'win32'",  # Outlook COM
 ]
 

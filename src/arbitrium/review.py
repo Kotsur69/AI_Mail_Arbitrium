@@ -34,12 +34,14 @@ class ReviewReason(str, Enum):
     EVIDENCE_NOT_GROUNDED = "evidence_not_grounded"
     EVIDENCE_TOO_SHORT = "evidence_too_short"
     BODY_ATTACHMENT_CONFLICT = "body_attachment_conflict"
+    VISION_TRANSCRIPT = "vision_transcript"
 
 
 def review_reasons(
     verdict: MessageVerdict,
     source_text: str,
     attachment_status: Status | None = None,
+    from_vision: bool = False,
 ) -> list[ReviewReason]:
     """Every reason this verdict needs a human, in the order a reviewer should read them."""
     reasons: list[ReviewReason] = []
@@ -57,6 +59,14 @@ def review_reasons(
         reasons.append(ReviewReason.EVIDENCE_NOT_GROUNDED)
     elif len(verdict.evidence.strip()) < MIN_EVIDENCE_CHARS:
         reasons.append(ReviewReason.EVIDENCE_TOO_SHORT)
+
+    # Evidence read off a scan is the one case the grounding rule above cannot
+    # police. The quote is checked against the transcription, and the
+    # transcription is what the vision model believed it saw -- so a misread
+    # word matches itself perfectly. Nothing here can catch that; a person
+    # glancing at the page can, in seconds, which is the whole trade.
+    if from_vision:
+        reasons.append(ReviewReason.VISION_TRANSCRIPT)
 
     # A signed attachment carries consent, so a body that says otherwise is a
     # conflict no rollup rule should silently resolve.
@@ -86,5 +96,6 @@ def needs_review(
     verdict: MessageVerdict,
     source_text: str,
     attachment_status: Status | None = None,
+    from_vision: bool = False,
 ) -> bool:
-    return bool(review_reasons(verdict, source_text, attachment_status))
+    return bool(review_reasons(verdict, source_text, attachment_status, from_vision))

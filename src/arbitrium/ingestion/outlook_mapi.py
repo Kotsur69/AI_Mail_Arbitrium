@@ -102,11 +102,15 @@ def _attachment_bytes(attachment: Any) -> bytes | None:
         return None
 
 
-def _attachments(item: Any) -> tuple[Attachment, ...]:
+def _attachments(item: Any, load_images: bool = False) -> tuple[Attachment, ...]:
     """Every attachment, with bytes loaded only for the kinds we can read.
 
     A signature logo is an attachment too. Pulling its content over COM buys
     nothing, so only extractable kinds within the size cap are fetched.
+
+    `load_images` widens that to pictures big enough to be a scanned page, which
+    is worth the bytes only when a vision model is configured to read them. Off
+    by default, so a run without vision moves exactly what it always did.
     """
     try:
         collection = item.Attachments
@@ -126,7 +130,8 @@ def _attachments(item: Any) -> tuple[Attachment, ...]:
 
         size = _get(com, "Size")
         stub = Attachment(name, size_bytes=size if isinstance(size, int) else None)
-        data = _attachment_bytes(com) if stub.is_extractable else None
+        wanted = stub.is_extractable or (load_images and stub.is_scan_candidate)
+        data = _attachment_bytes(com) if wanted else None
         found.append(Attachment(name, data, len(data) if data is not None else stub.size_bytes))
 
     return tuple(found)
@@ -143,7 +148,7 @@ def _received_at(item: Any) -> datetime | None:
         return None
 
 
-def to_raw_message(item: Any, folder_name: str) -> RawMessage:
+def to_raw_message(item: Any, folder_name: str, load_images: bool = False) -> RawMessage:
     """Map one Outlook item onto the source-independent record.
 
     Takes a duck-typed item so it can be exercised without Outlook present.
@@ -155,7 +160,7 @@ def to_raw_message(item: Any, folder_name: str) -> RawMessage:
         subject=_get(item, "Subject", "") or "",
         body=_get(item, "Body", "") or "",
         folder=folder_name,
-        attachments=_attachments(item),
+        attachments=_attachments(item, load_images),
     )
 
 
@@ -252,9 +257,15 @@ class OutlookMapiSource:
     exact, locale-dependent string.
     """
 
-    def __init__(self, store_name: str, folder_name: str | None = None) -> None:
+    def __init__(
+        self,
+        store_name: str,
+        folder_name: str | None = None,
+        load_images: bool = False,
+    ) -> None:
         self.store_name = store_name
         self.folder_name = folder_name
+        self.load_images = load_images
 
     def _folder(self, namespace: Any) -> Any:
         return find_folder(find_store(namespace, self.store_name), self.folder_name)
@@ -276,7 +287,7 @@ class OutlookMapiSource:
             item = items.GetFirst()
             while item is not None:
                 if _get(item, "Class") == OL_MAIL_ITEM:
-                    yield to_raw_message(item, folder.Name)
+                    yield to_raw_message(item, folder.Name, self.load_images)
                 else:
                     log.debug("skipping non-mail item in %s", folder.Name)
                 item = items.GetNext()
