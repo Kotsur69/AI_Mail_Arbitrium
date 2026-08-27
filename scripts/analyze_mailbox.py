@@ -16,6 +16,7 @@ Examples:
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --mailbox dostawcy
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --limit 20
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --no-attachments
+  .venv/Scripts/python.exe scripts/analyze_mailbox.py --all --csv raport.csv
   .venv/Scripts/python.exe scripts/analyze_mailbox.py --store you@firma.pl --show-content
 """
 
@@ -34,6 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from arbitrium.attachments.base import Extraction  # noqa: E402
 from arbitrium.attachments.extract import attachment_text, extract_all  # noqa: E402
 from arbitrium.classify import Classifier  # noqa: E402
+from arbitrium.export import (  # noqa: E402
+    MessageRecord,
+    suppliers_path,
+    write_messages_csv,
+    write_suppliers_csv,
+)
 from arbitrium.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     AppConfig,
@@ -152,6 +159,7 @@ class Run:
     """What one mailbox produced, kept addable so several can share a total."""
 
     def __init__(self) -> None:
+        self.records: list[MessageRecord] = []
         self.statuses: Counter[str] = Counter()
         self.reasons: Counter[str] = Counter()
         self.domains: Counter[str] = Counter()
@@ -164,6 +172,7 @@ class Run:
         self.seconds = 0.0
 
     def absorb(self, other: Run) -> None:
+        self.records += other.records
         self.statuses += other.statuses
         self.reasons += other.reasons
         self.domains += other.domains
@@ -249,6 +258,20 @@ def run_mailbox(
             support = supporting_status(classifier.classify(attached), attached)
 
         why = review_reasons(verdict, source_text, support)
+        run.records.append(MessageRecord(
+            mailbox=box.name,
+            supplier=message.sender_domain,
+            sender=message.sender_address,
+            subject=message.subject,
+            received_at=message.received_at,
+            status=verdict.status,
+            review_reasons=tuple(r.value for r in why),
+            evidence=verdict.evidence,
+            rationale=verdict.rationale,
+            attachments_total=len(extractions),
+            attachments_read=sum(1 for item in extractions if item.has_text),
+            attachment_status=support,
+        ))
         run.queued += bool(why)
         run.statuses[verdict.status] += 1
         for reason in why:
@@ -302,6 +325,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=None, help="0 means no limit")
     ap.add_argument("--no-attachments", action="store_true",
                     help="classify bodies only, without opening any files")
+    ap.add_argument("--csv", type=Path, default=None,
+                    help="write the report to this file, plus a per-supplier rollup beside it")
     ap.add_argument("--show-content", action="store_true",
                     help="print real subjects and senders (a person is reading this)")
     ap.add_argument("--list-stores", action="store_true")
@@ -310,6 +335,25 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--force", action="store_true", help="let --init-config overwrite")
     ap.add_argument("--model", default=None, help="override the model named in the config")
     return ap
+
+
+def write_report(path: Path, run: Run) -> None:
+    """Write both report files and say plainly what is in them.
+
+    The console redacts because its output reaches an assistant's context. These
+    files do not, and a redacted report would be useless to the person the CSV
+    was chosen for -- so they carry real content, and the run says so out loud
+    rather than letting someone discover it by pasting one into a chat.
+    """
+    if not run.records:
+        print("\nnothing classified, so no report was written")
+        return
+
+    messages = write_messages_csv(path, run.records)
+    suppliers = write_suppliers_csv(suppliers_path(path), run.records)
+    print(f"\nwrote {messages}  ({len(run.records)} messages)")
+    print(f"wrote {suppliers}  (grouped by supplier, `decyzja` column left for you)")
+    print("both files contain real subjects, senders and quotes -- do not paste them into a chat")
 
 
 def main() -> int:
@@ -349,6 +393,9 @@ def main() -> int:
 
     if len(boxes) > 1:
         total.report(f"TOTAL over {len(boxes)} mailboxes")
+
+    if args.csv:
+        write_report(args.csv, total)
     return 0
 
 

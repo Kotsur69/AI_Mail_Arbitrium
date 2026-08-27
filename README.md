@@ -21,9 +21,9 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 | Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB; ~12 s where an attachment is classified too, since that is a second call |
 | Outlook object model guard | does not fire — body, sender, and attachment *content* all read without prompts |
 | Attachments | 15 files across 8 real messages: 13 were signature images, never loaded; 2 spreadsheets read |
-| Tests | 128 passing |
+| Tests | 139 passing |
 
-Not built yet: OCR for scanned attachments, persistence, web UI, CSV export, scheduling.
+Not built yet: OCR for scanned attachments, persistence, web UI, scheduling.
 
 The requirements this is built against are in [`docs/blueprint.md`](docs/blueprint.md) — the stakeholder questionnaire, the
 answers that came back, and the three-phase roadmap. Read it before adding a
@@ -165,7 +165,19 @@ called.
 
 # A mailbox that is not in the config file at all.
 ./.venv/Scripts/python.exe scripts/analyze_mailbox.py --store "you@example.com" --limit 15
+
+# Write the report a stakeholder opens.
+./.venv/Scripts/python.exe scripts/analyze_mailbox.py --all --csv raport.csv
 ```
+
+`--csv raport.csv` writes two files: every message in `raport.csv`, and the
+per-supplier rollup in `raport-dostawcy.csv` beside it. Both open in Polish Excel
+without an import wizard — UTF-8 with a byte order mark, semicolon delimited, CRLF
+line endings — and the rollup carries an empty `decyzja` column, because the CSV was
+chosen so a person could edit it. No supplier-level verdict is derived: whether a
+later refusal overrides an earlier consent is a business rule nobody has agreed to yet.
+Unlike the console, **these files carry real subjects, senders and quotes** — a
+redacted report would be useless to the person it is for.
 
 `--folder`, `--since` and `--limit` override the file for one run, so narrowing a
 run never means editing configuration. `--no-attachments` classifies bodies only,
