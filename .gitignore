@@ -24,3 +24,8 @@ data/
 
 # Real mailbox configuration -- contains internal addresses.
 config/mailboxes.toml
+
+# Dashboard build output and its dependencies.
+node_modules/
+web/dist/
+.playwright-mcp/

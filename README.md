@@ -21,9 +21,11 @@ Phase 1 (proof of concept) is done and measured against a real mailbox:
 | Throughput | ~6.2 s per message on `qwen3-30b-a3b-2507`, RTX 5070 Ti / 64 GB; ~12 s where an attachment is classified too, since that is a second call |
 | Outlook object model guard | does not fire — body, sender, and attachment *content* all read without prompts |
 | Attachments | 15 files across 8 real messages: 13 were signature images, never loaded; 2 spreadsheets read |
-| Tests | 197 passing |
+| Tests | 217 passing |
 
-Not built yet: web UI, scheduling.
+A read-only [dashboard](#dashboard) over the stored verdicts ships alongside it.
+Not built yet: selecting mail in the browser and triggering a run from there, and
+the scheduled 07:00 report.
 
 The requirements this is built against are in [`docs/blueprint.md`](docs/blueprint.md) — the stakeholder questionnaire, the
 answers that came back, and the three-phase roadmap. Read it before adding a
@@ -140,6 +142,9 @@ src/arbitrium/
   config.py             mailboxes as configuration, validated on load
   export.py             the CSV a stakeholder opens, and the per-supplier rollup
   store.py              verdicts on disk, so a backfill can be resumed
+  web/
+    queries.py          read-only aggregation over the store, shaped for the UI
+    api.py              the JSON the dashboard reads, and the built dashboard
   attachments/
     base.py             what a file is: kind, size, whether to open it at all
     extract.py          pdf / docx / xlsx / txt → text, in memory
@@ -152,9 +157,14 @@ docs/
 scripts/
   probe_outlook.py      recon: stores, folders, guard behaviour (structure only)
   analyze_mailbox.py    Phase 1 CLI: read a mailbox, classify, report, resume
+  serve_dashboard.py    serve the read-only dashboard over an existing store
+  seed_demo.py          invented verdicts, so the UI can be looked at early
   phase0_smoke.py       constrained decoding + grounding on hand-written cases
   phase0_confidence.py  the confidence experiment that failed
   fetch_models.sh       pull GGUF weights from Hugging Face
+web/
+  src/lib/              API types, and the pipeline's vocabulary in Polish
+  src/components/       shadcn/ui primitives, plus the tables and the KPI row
 tests/
 ```
 
@@ -265,6 +275,44 @@ exists so mail is only ever displayed when a person is the one reading it.
 ```bash
 ./.venv/Scripts/python.exe -m pytest
 ```
+
+## Dashboard
+
+A local web view over the verdicts already on disk — the blueprint's Mode A, minus
+the part where a browser can start a classification. Every route is a `GET` and the
+database is opened `mode=ro`: a dashboard that could re-run a message is a dashboard
+that could overwrite a verdict someone has already acted on.
+
+```bash
+# One-off: install the serving dependencies and build the interface.
+./.venv/Scripts/python.exe -m pip install -e ".[web]"
+cd web && npm install && npm run build && cd ..
+
+# Nothing classified yet? Invent a campaign, purely to see the interface.
+./.venv/Scripts/python.exe scripts/seed_demo.py
+
+./.venv/Scripts/python.exe scripts/serve_dashboard.py --db data/demo.db
+# → http://127.0.0.1:8000
+```
+
+It reads the same `--db` the backfill writes, including while a run is still going:
+SQLite in WAL mode means the dashboard can watch a backfill land, one verdict at a
+time, behind the refresh button.
+
+What is on it: counts per status and the size of the review queue, each one clickable
+into the table below; mail per day with the queued share stacked on it; why the queue
+is as big as it is, per rule from `review.py`; the per-supplier rollup, queue-first
+and carrying no supplier-level verdict, exactly like the CSV; and every message,
+openable down to the quote the verdict rests on. Polish throughout, light and dark,
+and the fonts are bundled rather than fetched from a CDN — the rule that nothing
+leaves the local infrastructure covers stylesheet requests too.
+
+`--host` defaults to `127.0.0.1`. The blueprint wants this reachable at `192.168.x.x`
+eventually, and it will be, but a file of supplier correspondence should reach the LAN
+because someone typed the flag — not because a default did it quietly.
+
+For frontend work, `npm run dev` serves the pages with hot reload and proxies `/api`
+to `serve_dashboard.py`, which has to be running alongside it.
 
 ## Known limitation
 

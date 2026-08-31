@@ -1,0 +1,136 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* Dark mode is a class on <html>, not a media query, so the toggle in the
+   header can override the system preference for one reviewer on a shared
+   machine without changing anything else. */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Dense dashboard: a smaller radius than the shadcn default, because at this
+     row height a 10px corner reads as a rounded blob rather than a card. */
+  --radius: 0.5rem;
+
+  --background: oklch(0.9846 0.0034 247.86);
+  --foreground: oklch(0.2077 0.0398 265.75);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2077 0.0398 265.75);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2077 0.0398 265.75);
+  --primary: oklch(0.4244 0.1809 265.64);
+  --primary-foreground: oklch(0.9846 0.0034 247.86);
+  --secondary: oklch(0.9683 0.0069 247.9);
+  --secondary-foreground: oklch(0.2795 0.0368 260.03);
+  --muted: oklch(0.9683 0.0069 247.9);
+  --muted-foreground: oklch(0.5544 0.0407 257.42);
+  --accent: oklch(0.9683 0.0069 247.9);
+  --accent-foreground: oklch(0.2795 0.0368 260.03);
+  --destructive: oklch(0.5771 0.2152 27.33);
+  --border: oklch(0.9288 0.0126 255.51);
+  --input: oklch(0.9288 0.0126 255.51);
+  --ring: oklch(0.4244 0.1809 265.64);
+
+  /* The one warm colour, reserved for the review queue. Amber is the whole
+     point of the palette: it is the only thing on the page asking for a person. */
+  --highlight: oklch(0.6657 0.1517 58.32);
+
+  /* One colour per verdict. Green and red never appear alone -- every status
+     also carries its own icon and its Polish label, because a reviewer with
+     deuteranopia has to sort these as fast as anyone else. */
+  --consent: oklch(0.5957 0.1268 163.23);
+  --refusal: oklch(0.5771 0.2152 27.33);
+  --other: oklch(0.6657 0.1517 58.32);
+  --unrelated: oklch(0.5544 0.0407 257.42);
+}
+
+.dark {
+  --background: oklch(0.2077 0.0398 265.75);
+  --foreground: oklch(0.9683 0.0069 247.9);
+  --card: oklch(0.2573 0.0378 264.13);
+  --card-foreground: oklch(0.9683 0.0069 247.9);
+  --popover: oklch(0.2573 0.0378 264.13);
+  --popover-foreground: oklch(0.9683 0.0069 247.9);
+  --primary: oklch(0.6231 0.188 259.81);
+  --primary-foreground: oklch(0.2077 0.0398 265.75);
+  --secondary: oklch(0.2795 0.0368 260.03);
+  --secondary-foreground: oklch(0.9683 0.0069 247.9);
+  --muted: oklch(0.2795 0.0368 260.03);
+  --muted-foreground: oklch(0.7137 0.0192 261.32);
+  --accent: oklch(0.2795 0.0368 260.03);
+  --accent-foreground: oklch(0.9683 0.0069 247.9);
+  --destructive: oklch(0.6368 0.2078 25.33);
+  --border: oklch(0.3729 0.0306 259.73);
+  --input: oklch(0.3729 0.0306 259.73);
+  --ring: oklch(0.6231 0.188 259.81);
+
+  /* Lightened rather than inverted: the same hues at dark-mode luminance, so
+     the status colours still clear 4.5:1 against the dark card. */
+  --highlight: oklch(0.7686 0.1647 70.08);
+  --consent: oklch(0.696 0.1491 162.48);
+  --refusal: oklch(0.7038 0.1899 22.22);
+  --other: oklch(0.7686 0.1647 70.08);
+  --unrelated: oklch(0.7137 0.0192 261.32);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-highlight: var(--highlight);
+  --color-consent: var(--consent);
+  --color-refusal: var(--refusal);
+  --color-other: var(--other);
+  --color-unrelated: var(--unrelated);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Bundled with the app rather than fetched from a font CDN. This dashboard
+     shows supplier correspondence on an internal network, and a stylesheet
+     request to a third party is still a request to a third party. */
+  --font-sans: 'Fira Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, 'Cascadia Mono', monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    /* Counts, dates and percentages sit in columns that must not jitter as
+       digits change during a live backfill. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Every animation on this page is decoration over information that is
+     already on screen, so switching them all off costs nothing. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
